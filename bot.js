@@ -9,7 +9,7 @@ const puppeteer   = require('puppeteer');
 // ============================================================
 const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAERovNtMMg6G1IoQAGfp49u8zKRFI-MEOI";
 const OWNER_ID     = 1865939951;
-const OWNER_IDS    = [OWNER_ID, 8321379592];
+const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
 
 const REG_LINK     = "https://bdgwinuu.com/#/register?invitationCode=7442815992780";
