@@ -323,21 +323,15 @@ async function fetchCaptcha() {
 // ============================================================
 //  AUTO LOGIN (PUPPETEER VERSION)
 // ============================================================
-
-
 async function autoLogin(userId, chatId, silent = false) {
-
-
     const creds = userCreds[userId] || {};
     const { phone, pass } = creds;
 
     if (!phone || !pass) {
         await logBoth(chatId, `[AUTO LOGIN] User ${userId} has no phone or password set.`);
-
         return false;
     }
-
-    let browser;
+   let browser;
     try {
         browser = await puppeteer.launch({
             headless: true, 
@@ -357,13 +351,34 @@ async function autoLogin(userId, chatId, silent = false) {
         });
 
         await page.goto('https://bdgwin901.com/#/login', { waitUntil: 'domcontentloaded', timeout: 90000 });
-        await page.waitForSelector('input', { timeout: 30000 });
-        const inputs = await page.$$('input');
-        if (inputs.length < 2) throw new Error("Login inputs not found");
-
-        await inputs[0].type(phone, { delay: 50 });
-        await inputs[1].type(pass, { delay: 50 });
         
+        // Wait for input fields to load
+        await page.waitForSelector('input[type="text"], input[type="tel"], input[placeholder*="Phone"], input', { timeout: 30000 });
+        await sleep(1000);
+
+        // Phone number input field
+        const phoneInput = await page.$('input[placeholder*="number"], input[type="tel"], .van-field__control');
+        if (phoneInput) {
+            await phoneInput.click({ clickCount: 3 });
+            await phoneInput.press('Backspace');
+            await phoneInput.type(phone, { delay: 50 });
+        } else {
+            const inputs = await page.$$('input');
+            await inputs[1].type(phone, { delay: 50 });
+        }
+
+        await sleep(500);
+
+        // Password input field (using 'pass' variable from creds)
+        const passwordInput = await page.$('input[type="password"]');
+        if (passwordInput) {
+            await passwordInput.type(pass, { delay: 50 });
+        } else {
+            const inputs = await page.$$('input');
+            await inputs[2].type(pass, { delay: 50 });
+        }
+
+        // Click Login button
         await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button'));
             const loginBtn = btns.find(b => b.innerText.includes('Log in') || b.innerText.includes('Login'));
@@ -403,7 +418,6 @@ async function autoLogin(userId, chatId, silent = false) {
         }
 
         if (capturedToken) {
-            // Success: Update token only when captured
             userTokens[userId] = capturedToken;
             await logBoth(chatId, `✅ [SUCCESS] Token captured successfully for user ${userId}!`);
             return true;
@@ -416,7 +430,6 @@ async function autoLogin(userId, chatId, silent = false) {
         return false;
     } finally {
         if (browser) await browser.close();
-
     }
 }
 
