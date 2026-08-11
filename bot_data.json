@@ -1,0 +1,40 @@
+{
+  "userTokens": {},
+  "autobetCfg": {
+    "8321379592": {
+      "watch": true,
+      "watchLoss": 1,
+      "baseBet": 1,
+      "maxLvl": 8,
+      "enabled": false
+    }
+  },
+  "profitTrack": {
+    "8321379592": {
+      "totalBets": 0,
+      "wins": 0,
+      "losses": 0,
+      "pnl": 0,
+      "winStreak": 0,
+      "lossStreak": 0,
+      "maxW": 0,
+      "maxL": 0
+    }
+  },
+  "GLOBAL_TOKEN": "",
+  "usersAccess": {},
+  "keyStore": {},
+  "adminPasswords": {},
+  "stats": {
+    "8321379592": {
+      "total": 1,
+      "win": 1,
+      "loss": 0,
+      "lossStreak": 0,
+      "winStreak": 1,
+      "maxWinStreak": 0,
+      "maxLossStreak": 0
+    }
+  }
+}
+
