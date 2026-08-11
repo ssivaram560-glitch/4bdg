@@ -7,7 +7,7 @@ const puppeteer   = require('puppeteer');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAH4we-TE6xwSEJu5FIEzrweamGVIFG0YO8"
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAEnqt64FcSqVlwG9LRysF3BCMSG02j2nJ4"
 const OWNER_ID     = 1865939951;
 const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
@@ -961,7 +961,7 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
             if (wasWin) {
                 st.consecutiveLoss = 0;
             } else {
-                st.consecutiveLoss++;
+                st.consecutiveLoss = (st.consecutiveLoss || 0) + 1;
             }
         }
     }
