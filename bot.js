@@ -7,10 +7,11 @@ const puppeteer   = require('puppeteer');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    ="8999335291:AAH-e-xo1Bn7bWqH_OxJUOLYhO43au5PWXs";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAH-e-xo1Bn7bWqH_OxJUOLYhO43au5PWXs";
 const OWNER_ID     = 1865939951;
-const OWNER_PASS   = "praveensaran";
+const OWNER_IDS    = [OWNER_ID, 8321379592];
 const ADMIN_HANDLE = "@lucifer1570";
+
 const REG_LINK     = "https://bdgwinuu.com/#/register?invitationCode=7442815992780";
 const WIN_STICKER  = "CAACAgUAAxkBAAFHUGNp4JX1-ohP4uBEWpfNptaz-HmwVgAC4hgAAhboKVbObuGuTcMs2zsE";
 const LOSS_STICKER = "CAACAgUAAxkBAAFHUGVp4JX-BE2TRkhIKTwcjkwW-gzdPAACthoAAoG8YVYiydObSa0O8zsE";
