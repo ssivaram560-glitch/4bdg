@@ -7,7 +7,7 @@ const puppeteer   = require('puppeteer');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAE-40z94kymgpMYGl6cOhwA8KjhFYJUj-c"
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAF81fxfThFxhnsU7rlfTKZaKW7_M6caa3Y"
 const OWNER_ID     = 1865939951;
 const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
@@ -23,21 +23,21 @@ const DRAW_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIss
 
 // Martingale multipliers — user can customize base bet
 const MULT = [1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683]; // Standard 3x Martingale multipliers
-const LEVEL_REQUIREMENTS = [1, 2, 2, 4, 3, 4, 2, 4, 2, 2, 2, 2, 2, 2, 1];
+const LEVEL_REQUIREMENTS = [1, 1, 1, 1, 5, 4, 1, 1, 1, 1, 1, 1, 1, 1, 1];
 const LEVEL_RULES = {
     1: { type: 'none' },
-    2: { type: 'watch', lossesRequired: 3 },
-    3: { type: 'watch', lossesRequired: 4 },
-    4: { type: 'watch', lossesRequired: 5 },
-    5: { type: 'watch', lossesRequired: 5 },
+    2: { type: 'none' },
+    3: { type: 'none' },
+    4: { type: 'none' },
+    5: { type: 'skip', skipPeriods: 5 },
     6: { type: 'watch', lossesRequired: 4 },
-    7: { type: 'watch', lossesRequired: 4 },
-    8: { type: 'skip', skipPeriods: 7 },
-    9: { type: 'watch', lossesRequired: 4 },
-    10: { type: 'watch', lossesRequired: 4 },
-    11: { type: 'watch', lossesRequired: 2 },
-    12: { type: 'watch', lossesRequired: 2 },
-    13: { type: 'watch', lossesRequired: 2 },
+    7: { type: 'none' },
+    8: { type: 'none' },
+    9: { type: 'none' },
+    10: { type: 'none' },
+    11: { type: 'none' },
+    12: { type: 'none' },
+    13: { type: 'none' },
     14: { type: 'none' },
     15: { type: 'none' }
 };
@@ -757,10 +757,15 @@ function initState(userId) {
             lastPredictionWasLoss: false,
             consecutivePatternLoss: 0,
             predictionOutcomes: [],
+            resultSizeHistory: [],
+            patternStats: {},
+            dangerPatterns: {},
             skipRemaining: 0,
             c4Active: false,
             c5Triggered: false,
-            lastDecisionSource: null
+            lastDecisionSource: null,
+            lastLossLevel: 0,
+            l5RecoveryMode: false
         };
     } else {
         if (!userStates[userId].historyModes) userStates[userId].historyModes = [];
@@ -771,10 +776,15 @@ function initState(userId) {
         if (userStates[userId].lastPredictionWasLoss === undefined) userStates[userId].lastPredictionWasLoss = false;
         if (userStates[userId].consecutivePatternLoss === undefined) userStates[userId].consecutivePatternLoss = 0;
         if (userStates[userId].predictionOutcomes === undefined) userStates[userId].predictionOutcomes = [];
+        if (userStates[userId].resultSizeHistory === undefined) userStates[userId].resultSizeHistory = [];
+        if (userStates[userId].patternStats === undefined) userStates[userId].patternStats = {};
+        if (userStates[userId].dangerPatterns === undefined) userStates[userId].dangerPatterns = {};
         if (userStates[userId].skipRemaining === undefined) userStates[userId].skipRemaining = 0;
         if (userStates[userId].c4Active === undefined) userStates[userId].c4Active = false;
         if (userStates[userId].c5Triggered === undefined) userStates[userId].c5Triggered = false;
         if (userStates[userId].lastDecisionSource === undefined) userStates[userId].lastDecisionSource = null;
+        if (userStates[userId].lastLossLevel === undefined) userStates[userId].lastLossLevel = 0;
+        if (userStates[userId].l5RecoveryMode === undefined) userStates[userId].l5RecoveryMode = false;
     }
 }
 
@@ -791,6 +801,60 @@ function getNormalPrediction(sizes) {
 
 function getOppositePrediction(value) {
     return value === "BIG" ? "SMALL" : "BIG";
+}
+
+function buildPatternKeys(sizes) {
+    const seq = (sizes || []).slice(-12).map(v => (v === 'BIG' || v === 'B' || v === 1 ? 'B' : 'S'));
+    const keys = [];
+    for (let len = 4; len <= Math.min(6, seq.length); len++) {
+        keys.push(seq.slice(-len).join(''));
+    }
+    return keys;
+}
+
+function getPatternPrediction(patternKey) {
+    if (!patternKey) return 'SMALL';
+    const bigCount = patternKey.split('').filter(v => v === 'B').length;
+    return bigCount >= Math.ceil(patternKey.length / 2) ? 'BIG' : 'SMALL';
+}
+
+function findDangerPattern(state, patternKeys) {
+    if (!state || !state.dangerPatterns) return null;
+    const keys = Object.keys(state.dangerPatterns || {});
+    const match = keys.find(key => patternKeys.includes(key) && (state.dangerPatterns[key]?.count || 0) > 0);
+    return match || null;
+}
+
+function findBestWinPattern(state, patternKeys) {
+    if (!state || !state.patternStats) return null;
+    let best = null;
+    for (const key of patternKeys) {
+        const stats = state.patternStats[key];
+        if (!stats || stats.seen < 3) continue;
+        const total = stats.wins + stats.losses;
+        if (!total) continue;
+        const winRate = stats.wins / total;
+        if (winRate >= 0.7 && (!best || winRate > best.score)) {
+            best = { key, score: winRate, stats };
+        }
+    }
+    return best;
+}
+
+function updatePatternMemory(userId, sizeHistory, wasWin) {
+    const state = userStates[userId];
+    if (!state || !Array.isArray(sizeHistory) || !sizeHistory.length) return;
+    const patternKeys = buildPatternKeys(sizeHistory);
+    for (const key of patternKeys) {
+        if (!state.patternStats[key]) state.patternStats[key] = { wins: 0, losses: 0, seen: 0 };
+        state.patternStats[key].seen += 1;
+        if (wasWin) state.patternStats[key].wins += 1;
+        else state.patternStats[key].losses += 1;
+
+        if (state.patternStats[key].losses >= 3 && state.patternStats[key].seen >= 4) {
+            state.dangerPatterns[key] = { count: (state.dangerPatterns[key]?.count || 0) + 1, lastSeen: Date.now() };
+        }
+    }
 }
 
 function decidePrediction(list, currentLevel, userId) {
@@ -815,6 +879,34 @@ function decidePrediction(list, currentLevel, userId) {
     const c4Trigger = last4Sizes.length >= 4 && (last4Sizes.join("") === "BSBS" || last4Sizes.join("") === "SBSB");
     const recentOutcomes = (state.predictionOutcomes || []).slice(-5);
     const c5Trigger = recentOutcomes.length === 5 && recentOutcomes.every(outcome => outcome === "LOSS");
+    const patternKeys = buildPatternKeys(sizes);
+    const dangerousPattern = findDangerPattern(state, patternKeys);
+    const highWinPattern = findBestWinPattern(state, patternKeys);
+
+    if (dangerousPattern) {
+        state.skipRemaining = Math.max(state.skipRemaining || 0, 2);
+        state.lastDecisionSource = "DANGER_PATTERN";
+        return {
+            type: "SIZE",
+            val: null,
+            skip: true,
+            conf: 0,
+            pat: "DANGER_PATTERN",
+            reason: "DANGER_PATTERN:" + dangerousPattern
+        };
+    }
+
+    if ((state.lastLossLevel === 5 || state.l5RecoveryMode) && highWinPattern) {
+        const val = getPatternPrediction(highWinPattern.key);
+        state.lastDecisionSource = "L5PATTERN";
+        return {
+            type: "SIZE",
+            val,
+            conf: 92,
+            pat: "L5PATTERN",
+            reason: "L5PATTERN:" + highWinPattern.key
+        };
+    }
 
     if (c5Trigger) {
         state.c5Triggered = true;
@@ -915,6 +1007,13 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
     state.lastPredictionWasLoss = isSkip ? false : !wasWin;
     state.periodCounter++;
 
+    if (!isSkip && typeof actual !== 'undefined') {
+        const sizeVal = actual === 'BIG' || actual === 'SMALL' ? actual : (actual >= 5 ? 'BIG' : 'SMALL');
+        state.resultSizeHistory.push(sizeVal);
+        if (state.resultSizeHistory.length > 18) state.resultSizeHistory.shift();
+        updatePatternMemory(userId, state.resultSizeHistory, wasWin);
+    }
+
     const outcome = wasWin ? "WIN" : "LOSS";
     state.predictionOutcomes.push(isSkip ? "SKIP" : outcome);
     if (state.predictionOutcomes.length > 5) {
@@ -975,6 +1074,8 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
             st.waitingTarget = 0;
             st.watchConsecutiveLosses = 0;
             st.skipRemaining = 0;
+            state.lastLossLevel = 0;
+            state.l5RecoveryMode = false;
             return false;
         }
 
@@ -983,6 +1084,8 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
             const nextLevel = getNextLevel(betLevel, cfg.maxLvl);
             st.level = nextLevel;
             st.levelLossCount = 0;
+            state.lastLossLevel = betLevel;
+            state.l5RecoveryMode = betLevel === 5;
 
             if (currentRule.type === 'watch') {
                 st.waitingAction = 'watch';
