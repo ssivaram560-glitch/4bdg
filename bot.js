@@ -3,6 +3,7 @@ const axios       = require('axios');
 const crypto      = require('crypto');
 const zlib        = require('zlib');
 const puppeteer   = require('puppeteer');
+const fs          = require('fs');
 
 // ============================================================
 //  CONFIG
@@ -305,6 +306,83 @@ function initUser(id) {
     if (!profitTrack[id])  profitTrack[id]  = { totalBets:0, wins:0, losses:0, pnl:0, winStreak:0, lossStreak:0, maxW:0, maxL:0, totalBetAmount: 0 };
 }
 
+// Persistent store loaded from bot_data.json
+let persistentData = {};
+function loadPersistentData() {
+    try {
+        const raw = fs.readFileSync("bot_data.json", "utf8");
+        persistentData = JSON.parse(raw || "{}") || {};
+    } catch (e) {
+        console.warn("[DATA] Could not load bot_data.json, initializing new store.");
+        persistentData = {};
+    }
+    if (!persistentData.dangerPairs) persistentData.dangerPairs = {};
+    if (!persistentData.keyStore) persistentData.keyStore = {};
+    if (!persistentData.usersAccess) persistentData.usersAccess = {};
+    keyStore = persistentData.keyStore;
+    usersAccess = persistentData.usersAccess;
+}
+function savePersistentData() {
+    try {
+        const current = fs.existsSync("bot_data.json") ? JSON.parse(fs.readFileSync("bot_data.json","utf8")||"{}") : {};
+        // Merge known persistent stores
+        current.dangerPairs   = persistentData.dangerPairs   || {};
+        current.keyStore      = keyStore                    || {};
+        current.usersAccess   = usersAccess                 || {};
+        fs.writeFileSync("bot_data.json", JSON.stringify(current, null, 2), "utf8");
+    } catch (e) {
+        console.error("[DATA] Failed to save bot_data.json:", e.message);
+    }
+}
+
+loadPersistentData();
+
+// Expire danger pairs older than 2 hours
+const PAIR_EXPIRY_MS = 2 * 60 * 60 * 1000; // 2 hours
+function cleanupOldPairs() {
+    if (!persistentData.dangerPairs) return;
+    const now = Date.now();
+    let changed = false;
+    for (const [k, v] of Object.entries(persistentData.dangerPairs)) {
+        if (!v || !v.lastSeen) continue;
+        if (now - v.lastSeen > PAIR_EXPIRY_MS) {
+            // reset the pair
+            delete persistentData.dangerPairs[k];
+            changed = true;
+            console.log(`[DANGER CLEANUP] Removed pair ${k} due to age > 4h`);
+        }
+    }
+    if (changed) savePersistentData();
+}
+
+// Run cleanup on load and periodically every 30 minutes
+cleanupOldPairs();
+setInterval(cleanupOldPairs, 30 * 60 * 1000);
+
+async function recordDangerPair(pairKey, chatId = null) {
+    if (!pairKey) return;
+    if (!persistentData.dangerPairs) persistentData.dangerPairs = {};
+    if (!persistentData.dangerPairs[pairKey]) persistentData.dangerPairs[pairKey] = { count: 0, skip: false, lastSeen: 0 };
+    persistentData.dangerPairs[pairKey].count = (persistentData.dangerPairs[pairKey].count || 0) + 1;
+    persistentData.dangerPairs[pairKey].lastSeen = Date.now();
+    const count = persistentData.dangerPairs[pairKey].count;
+    if (count >= 3) {
+        persistentData.dangerPairs[pairKey].skip = true;
+        console.log(`[DANGER] Pair ${pairKey} reached count=${count} -> SKIP`);
+    } else {
+        console.log(`[DANGER] Pair ${pairKey} incremented to ${count}`);
+    }
+    savePersistentData();
+
+    const recipient = chatId || OWNER_ID;
+    const msg = `⚠️ Danger pair recorded: ${pairKey}\nCount: ${count}\n${count >= 3 ? 'SKIP activated' : 'SKIP pending'}`;
+    try {
+        await send(recipient, msg);
+    } catch (e) {
+        console.error(`[DANGER] Failed to send notification: ${e.message}`);
+    }
+}
+
 function hasAccess(id) {
     if (Number(id) === Number(OWNER_ID)) return true;
     if (running[id] === true) return true;
@@ -341,6 +419,7 @@ function getBetAmount(userId, level) {
 function generateKey(days, by) {
     const k = "EARN WITH ME-"+crypto.randomBytes(3).toString('hex').toUpperCase()+"-"+crypto.randomBytes(2).toString('hex').toUpperCase();
     keyStore[k] = { days, used:false, usedBy:null, by:by||OWNER_ID };
+    savePersistentData();
     return k;
 }
 function activateKey(userId, code) {
@@ -356,6 +435,7 @@ function activateKey(userId, code) {
     keyStore[k].used=true;
     keyStore[k].usedBy=userId;
     usersAccess[userId] = newExpiry;
+    savePersistentData();
     return { ok:true, days, expiry:new Date(newExpiry).toLocaleString() };
 }
 function activeUsersList() {
@@ -782,6 +862,7 @@ function initState(userId) {
         if (userStates[userId].skipRemaining === undefined) userStates[userId].skipRemaining = 0;
         if (userStates[userId].c4Active === undefined) userStates[userId].c4Active = false;
         if (userStates[userId].c5Triggered === undefined) userStates[userId].c5Triggered = false;
+        if (userStates[userId].awaitingSamePair === undefined) userStates[userId].awaitingSamePair = false;
         if (userStates[userId].lastDecisionSource === undefined) userStates[userId].lastDecisionSource = null;
         if (userStates[userId].lastLossLevel === undefined) userStates[userId].lastLossLevel = 0;
         if (userStates[userId].l5RecoveryMode === undefined) userStates[userId].l5RecoveryMode = false;
@@ -801,6 +882,24 @@ function getNormalPrediction(sizes) {
 
 function getOppositePrediction(value) {
     return value === "BIG" ? "SMALL" : "BIG";
+}
+
+function isAlternating4Pattern(sizes) {
+    if (!sizes || sizes.length < 4) return false;
+    const last4 = sizes.slice(-4).map(v => v === 'BIG' ? 'B' : 'S').join('');
+    return last4 === 'BSBS' || last4 === 'SBSB';
+}
+
+function hasTripleInLastFive(numbers) {
+    if (!numbers || numbers.length < 3) return null;
+    const last5 = numbers.slice(-5);
+    const counts = {};
+    for (const num of last5) {
+        if (typeof num !== 'number' || Number.isNaN(num)) continue;
+        counts[num] = (counts[num] || 0) + 1;
+        if (counts[num] >= 3) return num;
+    }
+    return null;
 }
 
 function buildPatternKeys(sizes) {
@@ -865,19 +964,53 @@ function decidePrediction(list, currentLevel, userId) {
     initState(userId);
     const state = userStates[userId];
 
+    // Evaluate skip and danger logic in priority order before normal prediction:
+    // 1. persistent danger pair skip (last-two numeric results with count>=3)
+    // 2. danger patterns from patternStats
+    // 3. L5 recovery high win pattern prediction
+    // 4. C5 loss streak strategy
+    // 5. alternating ABAB/BABA wait logic
+    // 6. C4 pattern reversal logic
+    // 7. pending ALT4_WAIT state (waiting for same last pair)
+    // 8. any active skipRemaining countdown
+    // 9. C1 violet/repeated number skip
+    // 10. C2 triple same number in last 5 skip
+    // 11. C3 BBBSSS/SSSBBB skip wait
+    // 12. finally, NORMAL prediction
     const recentItems = list.slice(0, 10).reverse();
     const numbers = recentItems.map(item => parseInt(item.number || item.winNumber || 0));
     const sizes = numbers.map(num => num >= 5 ? "BIG" : "SMALL");
+    // New: check persistent danger-pairs (last two numeric results)
+    if (numbers && numbers.length >= 2) {
+        const lastTwoNums = numbers.slice(-2);
+        const pairKey = String(lastTwoNums[0]) + String(lastTwoNums[1]);
+        const dp = persistentData.dangerPairs && persistentData.dangerPairs[pairKey];
+        if (dp && dp.count >= 3) {
+            state.lastDecisionSource = "DANGER_PAIR";
+            // mark skip and return immediately
+            state.skipRemaining = Math.max(state.skipRemaining || 0, 2);
+            return {
+                type: "SIZE",
+                val: null,
+                skip: true,
+                conf: 0,
+                pat: "DANGER_PAIR",
+                reason: "DANGER_PAIR:" + pairKey
+            };
+        }
+    }
     const last5Sizes = sizes.slice(-5);
     const last6Sizes = sizes.slice(-6);
     const last4Sizes = sizes.slice(-4);
+    const last2Sizes = sizes.slice(-2);
     const latestResult = last5Sizes[last5Sizes.length - 1] || "SMALL";
 
     const violetCount = numbers.slice(-5).filter(num => num === 0 || num === 5).length;
-    const repeatedNumber = numbers.slice(-5).find(num => numbers.slice(-5).filter(value => value === num).length >= 3);
+    const repeatedNumber = hasTripleInLastFive(numbers);
     const c3Trigger = last6Sizes.length >= 6 && (last6Sizes.join("") === "BBBSSS" || last6Sizes.join("") === "SSSBBB");
     const c4Trigger = last4Sizes.length >= 4 && (last4Sizes.join("") === "BSBS" || last4Sizes.join("") === "SBSB");
-    const alternating4SkipTrigger = last4Sizes.length >= 4 && (last4Sizes.join("") === "BSBS" || last4Sizes.join("") === "SBSB");
+    const alternating4WaitTrigger = isAlternating4Pattern(last4Sizes); // ABAB or BABA pattern
+    const sameLastPair = last2Sizes.length === 2 && last2Sizes[0] === last2Sizes[1];
     const recentOutcomes = (state.predictionOutcomes || []).slice(-5);
     const c5Trigger = recentOutcomes.length === 5 && recentOutcomes.every(outcome => outcome === "LOSS");
     const patternKeys = buildPatternKeys(sizes);
@@ -923,17 +1056,21 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    if (alternating4SkipTrigger) {
-        state.skipRemaining = 6;
-        state.lastDecisionSource = "ALT4_SKIP";
+    if (alternating4WaitTrigger && !sameLastPair) {
+        state.awaitingSamePair = true;
+        state.lastDecisionSource = "ALT4_WAIT";
         return {
             type: "SIZE",
             val: null,
             skip: true,
             conf: 0,
-            pat: "ALT4_SKIP",
-            reason: "ALT4_SKIP"
+            pat: "ALT4_WAIT",
+            reason: "ALT4_WAIT"
         };
+    }
+
+    if (state.awaitingSamePair && sameLastPair) {
+        state.awaitingSamePair = false;
     }
 
     if (state.c4Active || c4Trigger) {
@@ -947,6 +1084,18 @@ function decidePrediction(list, currentLevel, userId) {
             conf: 95,
             pat: "C4",
             reason: "C4"
+        };
+    }
+
+    if (state.awaitingSamePair && !sameLastPair) {
+        state.lastDecisionSource = "ALT4_WAIT";
+        return {
+            type: "SIZE",
+            val: null,
+            skip: true,
+            conf: 0,
+            pat: "ALT4_WAIT",
+            reason: "ALT4_WAIT"
         };
     }
 
@@ -976,7 +1125,7 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    if (repeatedNumber !== undefined) {
+    if (repeatedNumber !== null) {
         state.skipRemaining = 3;
         state.lastDecisionSource = "C2";
         return {
@@ -990,7 +1139,7 @@ function decidePrediction(list, currentLevel, userId) {
     }
 
     if (c3Trigger) {
-        state.skipRemaining = 7;
+        state.skipRemaining = 6;
         state.lastDecisionSource = "C3";
         return {
             type: "SIZE",
@@ -1381,6 +1530,25 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         const betLevel = st.level;
 
         const shouldStopBot = updateAfterResult(userId, win, actual, betPlaced, betLevel);
+
+        // maintain numeric history for user state (last numbers)
+        initState(userId);
+        if (!userStates[userId].resultNumberHistory) userStates[userId].resultNumberHistory = [];
+        userStates[userId].resultNumberHistory.push(num);
+        if (userStates[userId].resultNumberHistory.length > 20) userStates[userId].resultNumberHistory.shift();
+
+        // If this was a placed bet and it lost, record the last-two-number pair
+        if (betPlaced && !win) {
+            // try to pick previous number: prefer the state's history, fallback to list[1]
+            const hist = userStates[userId].resultNumberHistory;
+            let prevNum = undefined;
+            if (hist && hist.length >= 2) prevNum = hist[hist.length - 2];
+            if (typeof prevNum === 'undefined' && list && list[1]) prevNum = parseInt(list[1].number || list[1].winNumber || 0);
+            if (typeof prevNum !== 'undefined') {
+                const pairKey = String(prevNum) + String(num);
+                await recordDangerPair(pairKey, chatId);
+            }
+        }
 
         const s = stats[userId];
         s.total++;
