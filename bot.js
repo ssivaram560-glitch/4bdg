@@ -15,7 +15,7 @@ process.on('unhandledRejection', (reason) => {
 //  CONFIG
 // ============================================================
 // ============================================================
-const BOT_TOKEN    ="8999335291:AAH-e-xo1Bn7bWqH_OxJUOLYhO43au5PWXs";
+const BOT_TOKEN    ="8999335291:AAEnqt64FcSqVlwG9LRysF3BCMSG02j2nJ4";
 const OWNER_ID     = 1865939951;
 const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
