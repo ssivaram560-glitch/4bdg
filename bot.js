@@ -7,7 +7,7 @@ const puppeteer   = require('puppeteer');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAF81fxfThFxhnsU7rlfTKZaKW7_M6caa3Y"
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAEZad8TEgdiS7-SBJowzpNC0Y6J-5gobKg"
 const OWNER_ID     = 1865939951;
 const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
@@ -877,6 +877,7 @@ function decidePrediction(list, currentLevel, userId) {
     const repeatedNumber = numbers.slice(-5).find(num => numbers.slice(-5).filter(value => value === num).length >= 3);
     const c3Trigger = last6Sizes.length >= 6 && (last6Sizes.join("") === "BBBSSS" || last6Sizes.join("") === "SSSBBB");
     const c4Trigger = last4Sizes.length >= 4 && (last4Sizes.join("") === "BSBS" || last4Sizes.join("") === "SBSB");
+    const alternating4SkipTrigger = last4Sizes.length >= 4 && (last4Sizes.join("") === "BSBS" || last4Sizes.join("") === "SBSB");
     const recentOutcomes = (state.predictionOutcomes || []).slice(-5);
     const c5Trigger = recentOutcomes.length === 5 && recentOutcomes.every(outcome => outcome === "LOSS");
     const patternKeys = buildPatternKeys(sizes);
@@ -919,6 +920,19 @@ function decidePrediction(list, currentLevel, userId) {
             conf: 98,
             pat: "C5",
             reason: "C5"
+        };
+    }
+
+    if (alternating4SkipTrigger) {
+        state.skipRemaining = 6;
+        state.lastDecisionSource = "ALT4_SKIP";
+        return {
+            type: "SIZE",
+            val: null,
+            skip: true,
+            conf: 0,
+            pat: "ALT4_SKIP",
+            reason: "ALT4_SKIP"
         };
     }
 
@@ -976,7 +990,7 @@ function decidePrediction(list, currentLevel, userId) {
     }
 
     if (c3Trigger) {
-        state.skipRemaining = 4;
+        state.skipRemaining = 7;
         state.lastDecisionSource = "C3";
         return {
             type: "SIZE",
