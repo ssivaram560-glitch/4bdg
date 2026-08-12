@@ -4,12 +4,20 @@ const crypto      = require('crypto');
 const zlib        = require('zlib');
 const puppeteer   = require('puppeteer');
 
+process.on('uncaughtException', (err) => {
+    console.error('uncaughtException:', err?.stack || err);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('unhandledRejection:', reason);
+});
+
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAEnqt64FcSqVlwG9LRysF3BCMSG02j2nJ4"
-const OWNER_ID     = 1865939951;
-const OWNER_PASS   = "praveensaran";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAEnqt64FcSqVlwG9LRysF3BCMSG02j2nJ4";
+const OWNER_IDS    = [1865939951, 8321379592];
+const OWNER_ID     = OWNER_IDS[0];
+const OWNER_PASS   = "Praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
 
 const REG_LINK     = "https://bdgwinuu.com/#/register?invitationCode=7442815992780";
@@ -24,6 +32,35 @@ const DRAW_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIss
 // Martingale multipliers — user can customize base bet
 const MULT = [1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683]; // Standard 3x Martingale multipliers
 const LEVEL_REQUIREMENTS = [1, 2, 2, 4, 3, 4, 2, 4, 2, 2, 2, 2, 2, 2, 1];
+const DEFAULT_ADMIN_IDS = [8868253140, 6008508151, 1269728158];
+const DEFAULT_ACCESS_IDS = [8868253140, 6008508151, 1269728158];
+const LEVEL_RULES = {
+    1: { type: 'none' },
+    2: { type: 'watch', lossesRequired: 3 },
+    3: { type: 'watch', lossesRequired: 4 },
+    4: { type: 'watch', lossesRequired: 5 },
+    5: { type: 'watch', lossesRequired: 5 },
+    6: { type: 'watch', lossesRequired: 4 },
+    7: { type: 'watch', lossesRequired: 4 },
+    8: { type: 'skip', skipPeriods: 7 },
+    9: { type: 'watch', lossesRequired: 4 },
+    10: { type: 'watch', lossesRequired: 4 },
+    11: { type: 'watch', lossesRequired: 2 },
+    12: { type: 'watch', lossesRequired: 2 },
+    13: { type: 'watch', lossesRequired: 2 },
+    14: { type: 'none' },
+    15: { type: 'none' }
+};
+
+function getLevelRule(level) {
+    const safeLevel = Math.max(1, Math.min(15, Number(level) || 1));
+    return LEVEL_RULES[safeLevel] || { type: 'none' };
+}
+
+function getNextLevel(level, maxLvl) {
+    const safeMax = Math.max(1, Number(maxLvl) || 15);
+    return Math.min(Math.max(1, Number(level) || 1) + 1, safeMax);
+}
 
 // ============================================================
 //  RENDER KEEP-ALIVE
@@ -91,15 +128,12 @@ http.createServer((req, res) => {
             return res.end(JSON.stringify({
                 server: 'SIVA BOT',
                 ownerId: OWNER_ID,
-                ownerPass: OWNER_PASS ? 'SET' : 'NOT SET',
                 localLoginSecret: LOCAL_LOGIN_SECRET ? 'SET' : 'NOT SET',
                 state: {
                     ownerLoggedIn,
                     adminLoggedIn,
                     usersAccess: Object.keys(usersAccess).length,
                     running: Object.keys(running).filter(k => running[k]).length,
-                    userTokens: Object.keys(userTokens).length,
-                    globalToken: !!GLOBAL_TOKEN,
                     port: PORT
                 }
             }, null, 2));
@@ -266,6 +300,11 @@ function initUser(id) {
     if (!autobetState[id]) autobetState[id] = { 
         level:1, 
         consecutiveLoss:0, 
+        levelLossCount:0,
+        waitingAction: null,
+        waitingTarget: 0,
+        watchConsecutiveLosses: 0,
+        skipRemaining: 0,
         inMart:false,
         isWaiting: false,      // NEW: Bot waiting-la irukka-nu check panna
         nextStartTime: null    // NEW: Thirumba eppo start aakanum-nu store panna
@@ -273,22 +312,26 @@ function initUser(id) {
     if (!profitTrack[id])  profitTrack[id]  = { totalBets:0, wins:0, losses:0, pnl:0, winStreak:0, lossStreak:0, maxW:0, maxL:0, totalBetAmount: 0 };
 }
 
+function isOwner(id)   { return OWNER_IDS.includes(Number(id)); }
 function hasAccess(id) {
-    if (Number(id) === Number(OWNER_ID)) return true;
+    if (isOwner(id)) return true;
+    if (DEFAULT_ACCESS_IDS.includes(Number(id))) return true;
     if (running[id] === true) return true;
     const expiry = usersAccess[id];
     return !!(expiry && Date.now() < expiry);
 }
 function daysLeft(id) {
-    if (Number(id) === Number(OWNER_ID)) return "∞";
+    if (isOwner(id)) return "∞";
+    if (DEFAULT_ACCESS_IDS.includes(Number(id))) return "∞";
     if (running[id] === true) return "RUN";
     const expiry = usersAccess[id];
     if (!expiry) return "0";
     const left = (expiry - Date.now()) / 86400000;
     return left > 0 ? left.toFixed(1) : "0";
 }
-function isAdmin(id)    { return adminPasswords[id] !== undefined; }
-function isAdminIn(id)  { return adminLoggedIn[id] === true; }
+function isAdmin(id)    { return DEFAULT_ADMIN_IDS.includes(Number(id)) || adminPasswords[id] !== undefined; }
+function isAdminIn(id)  { return DEFAULT_ADMIN_IDS.includes(Number(id)) || adminLoggedIn[id] === true; }
+function broadcastOwners(text) { OWNER_IDS.forEach(o => send(o, text)); }
 function sleep(ms)      { return new Promise(r => setTimeout(r, ms)); }
 function getToken(id)   { return userTokens[id] || GLOBAL_TOKEN || ""; }
 
@@ -327,23 +370,25 @@ function activateKey(userId, code) {
     return { ok:true, days, expiry:new Date(newExpiry).toLocaleString() };
 }
 function activeUsersList() {
-    const now=Date.now();
+    const now = Date.now();
     const ids = new Set(Object.keys(usersAccess));
     Object.keys(running).forEach(id => { if (running[id]) ids.add(id); });
+    DEFAULT_ACCESS_IDS.forEach(id => ids.add(String(id)));
 
-    const list = [...ids].filter(id => Number(id) === Number(OWNER_ID) || running[id] || Number(usersAccess[id]) > now);
+    const list = [...ids].filter(id => Number(id) === Number(OWNER_ID) || running[id] || DEFAULT_ACCESS_IDS.includes(Number(id)) || Number(usersAccess[id]) > now);
     if (!list.length) return "No active users.";
 
     return list.map(id => {
         if (Number(id) === Number(OWNER_ID)) return "🟢 " + id + " | ♾️ Unlimited";
+        if (DEFAULT_ACCESS_IDS.includes(Number(id))) return "🟢 " + id + " | ♾️ Unlimited";
         if (running[id]) return "🟢 " + id + " | ⚡ Running";
         const expiry = Number(usersAccess[id]) || 0;
         return "🟢 " + id + " | " + ((expiry - now) / 86400000).toFixed(1) + "d";
     }).join("\n");
 }
 function adminList() {
-    const ids=Object.keys(adminPasswords);
-    return ids.length ? ids.map(id=>"👤 "+id+" | "+(adminLoggedIn[id]?"🟢 Online":"🔴 Offline")).join("\n") : "No admins.";
+    const ids = [...new Set([ ...DEFAULT_ADMIN_IDS.map(String), ...Object.keys(adminPasswords) ])];
+    return ids.length ? ids.map(id => "👤 " + id + " | " + (DEFAULT_ADMIN_IDS.includes(Number(id)) ? "♾️ Default Admin" : (adminLoggedIn[id] ? "🟢 Online" : "🔴 Offline"))).join("\n") : "No admins.";
 }
 function allKeysList() {
     const keys=Object.entries(keyStore);
@@ -875,7 +920,7 @@ function decidePrediction(list, currentLevel, userId) {
     };
 }
 
-function updateAfterResult(userId, wasWin, actual, betPlaced) {
+function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
     initState(userId);
     const state = userStates[userId];
     
@@ -938,26 +983,65 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
         if (betPlaced && wasWin) {
             st.level = 1;
             st.consecutiveLoss = 0;
+            st.levelLossCount = 0;
+            st.waitingAction = null;
+            st.waitingTarget = 0;
+            st.watchConsecutiveLosses = 0;
+            st.skipRemaining = 0;
             return false;
         }
 
         if (betPlaced && !wasWin) {
-            st.consecutiveLoss = (st.consecutiveLoss || 0) + 1;
+            const currentRule = getLevelRule(betLevel);
+            const nextLevel = getNextLevel(betLevel, cfg.maxLvl);
+            st.level = nextLevel;
+            st.levelLossCount = 0;
 
-            if (st.level >= 15) {
-                st.consecutiveLoss = 0;
-                return true;
+            if (currentRule.type === 'watch') {
+                st.waitingAction = 'watch';
+                st.waitingTarget = currentRule.lossesRequired;
+                st.watchConsecutiveLosses = 0;
+                st.skipRemaining = 0;
+            } else if (currentRule.type === 'skip') {
+                st.waitingAction = 'skip';
+                st.waitingTarget = currentRule.skipPeriods;
+                st.skipRemaining = currentRule.skipPeriods;
+                st.watchConsecutiveLosses = 0;
+            } else {
+                st.waitingAction = null;
+                st.waitingTarget = 0;
+                st.watchConsecutiveLosses = 0;
+                st.skipRemaining = 0;
             }
 
-            const threshold = getLevelRequirement(st.level);
-            if (st.consecutiveLoss >= threshold) {
-                st.level = Math.min(15, st.level + 1);
-                st.consecutiveLoss = 0;
+            if (cfg && cfg.watch) {
+                st.consecutiveLoss = (st.consecutiveLoss || 0) + 1;
+            }
+
+            if (st.level >= 15) {
+                return true;
             }
             return false;
         }
 
-        if (cfg && cfg.watch) {
+        if (st.waitingAction === 'watch') {
+            if (wasWin) {
+                st.watchConsecutiveLosses = 0;
+            } else {
+                st.watchConsecutiveLosses = (st.watchConsecutiveLosses || 0) + 1;
+            }
+            if (st.watchConsecutiveLosses >= st.waitingTarget) {
+                st.waitingAction = null;
+                st.waitingTarget = 0;
+                st.watchConsecutiveLosses = 0;
+            }
+        } else if (st.waitingAction === 'skip') {
+            st.skipRemaining = Math.max(0, st.skipRemaining - 1);
+            if (st.skipRemaining === 0) {
+                st.waitingAction = null;
+                st.waitingTarget = 0;
+            }
+        } else if (cfg && cfg.watch) {
             if (wasWin) {
                 st.consecutiveLoss = 0;
             } else {
@@ -1099,20 +1183,32 @@ async function runPredict(userId, chatId) {
     const signal = decidePrediction(list, st.level, userId);
     if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
 
-    if (signal.skip) {
-        updateAfterResult(userId, false, null, false);
+    const waitingDueToLevel = st.waitingAction === 'watch' || st.waitingAction === 'skip';
+    if (signal.skip && !waitingDueToLevel) {
+        updateAfterResult(userId, false, null, false, st.level);
         await send(chatId, `⏭️ Skip Round (${signal.reason}) — no bet placed.`);
         return setTimeout(()=>runPredict(userId,chatId), 7000);
     }
 
     let abLine = "🤖 AutoBet: OFF";
     let canBet = false;
+    let waitLine = "";
 
     if (!cfg || !cfg.enabled) {
         abLine = "🤖 AutoBet: OFF";
         canBet = false;
+    } else if (waitingDueToLevel) {
+        canBet = false;
+        if (st.waitingAction === 'watch') {
+            waitLine = `\nWatch: ${st.watchConsecutiveLosses}/${st.waitingTarget} losses`;
+            abLine = `👀 WATCH MODE (${st.level})`;
+        } else if (st.waitingAction === 'skip') {
+            waitLine = `\nSkip: ${st.skipRemaining} periods`;
+            abLine = `⏸ SKIP MODE (${st.level})`;
+        }
     } else if (cfg.watch && st.consecutiveLoss < cfg.watchLoss) {
         abLine = `👀 WATCHING: ${st.consecutiveLoss}/${cfg.watchLoss}`;
+        waitLine = `\nWatch Loss: ${st.consecutiveLoss}/${cfg.watchLoss}`;
         canBet = false;
     } else {
         canBet = true;
@@ -1121,7 +1217,6 @@ async function runPredict(userId, chatId) {
     }
 
     const patternName = signal && signal.pat ? signal.pat : (state && state.mode ? state.mode : "NORMAL");
-    const waitLine = (cfg && cfg.watch && st.consecutiveLoss < cfg.watchLoss) ? "\nWatch Loss: " + st.consecutiveLoss + "/" + cfg.watchLoss : "";
 
     await send(chatId,
 "╔══════════════════════════╗\n"+
@@ -1181,7 +1276,7 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         const win = predicted === actual;
         const betLevel = st.level;
 
-        const shouldStopBot = updateAfterResult(userId, win, actual, betPlaced);
+        const shouldStopBot = updateAfterResult(userId, win, actual, betPlaced, betLevel);
 
         const s = stats[userId];
         s.total++;
@@ -1355,26 +1450,28 @@ function recoverPolling(err) {
 }
 function startBot(){
     if(bot){try{bot.stopPolling();}catch(e){}}
-    bot=new TelegramBot(BOT_TOKEN,{polling:{interval:1000,autoStart:true,params:{timeout:30}}});
+    try {
+        bot=new TelegramBot(BOT_TOKEN,{polling:{interval:1000,autoStart:true,params:{timeout:60}}});
+    } catch (e) {
+        console.error("[BOT] Failed to initialize Telegram bot:", e?.stack || e);
+        return setTimeout(startBot, 5000);
+    }
     bot.on("polling_error",err=>{
-        const msg = err?.message || String(err);
-        if (msg.includes("ECONNRESET") || msg.includes("EFATAL") || msg.includes("socket hang up")) {
-            recoverPolling(err);
-            return;
-        }
-        console.error("Poll:", msg);
+        console.error("[POLL] polling_error:", err?.stack || err);
+        recoverPolling(err);
     });
     bot.on("error",err=>{
         const msg = err?.message || String(err);
+        console.error("Bot error:", msg, err);
         if (msg.includes("ECONNRESET") || msg.includes("EFATAL") || msg.includes("socket hang up")) {
-            console.warn("Bot error recovered:", msg);
             return;
         }
-        console.error("Bot:", msg);
+    });
+    bot.on("webhook_error", err => {
+        console.error("Webhook error:", err?.stack || err);
     });
     addHandlers();
     console.log("✅ SIVA BOT running...");
-
 }
 
 async function send(chatId,text,opts={}){
@@ -1438,9 +1535,10 @@ function addHandlers(){
     });
 
     bot.onText(/\/owner/,(msg)=>{
-        if(msg.from.id!==OWNER_ID)return;
-        if(ownerLoggedIn)return send(OWNER_ID,"Already in!",{reply_markup:ownerMenu});
-        ownerState={action:"login"};send(OWNER_ID,"� Owner password:");
+        if(!isOwner(msg.from.id))return;
+        if(ownerLoggedIn[msg.from.id])return send(msg.from.id,"Already in!",{reply_markup:ownerMenu});
+        ownerState[msg.from.id]={action:"login"};
+        send(msg.from.id,"� Owner password:");
     });
 
     bot.onText(/\/adminlogin (.+)/,(msg,match)=>{
@@ -1458,31 +1556,31 @@ function addHandlers(){
         const OB=["👥 All Users","👮 All Admins","👤 Add Admin","🗑 Remove Admin","🔑 Generate Key","📋 All Keys","🟢 Add User","🔴 Remove User","🔐 Set Token","📊 All Status","🚪 Owner Logout"];
         const AB=["👥 Active Users","🔑 Generate Key","🟢 Add User","🔴 Remove User","📋 All Keys","🚪 Admin Logout"];
 
-        if(id===OWNER_ID&&ownerState){
-            const s=ownerState;
-            if(s.action==="login"){if(text===OWNER_PASS){ownerLoggedIn=true;ownerState=null;return send(OWNER_ID,"👑 Welcome!",{reply_markup:ownerMenu});}else return send(OWNER_ID,"❌ Wrong!");}
-            if(OB.includes(text)){ownerState=null;}
-            else if(s.action==="addadmin"){if(!s.step2){const t=parseInt(text);if(isNaN(t))return send(OWNER_ID,"❌");ownerState={action:"addadmin",step2:true,tid:t};return send(OWNER_ID,"ID:"+t+"\nPassword:");}else{if(text.length<6)return send(OWNER_ID,"❌ Min 6");adminPasswords[s.tid]=text;adminLoggedIn[s.tid]=false;ownerState=null;send(OWNER_ID,"✅ Admin: "+s.tid,{reply_markup:ownerMenu});send(s.tid,"🎉 Admin!\n/adminlogin "+text);return;}}
-            else if(s.action==="removeadmin"){const t=parseInt(text);if(isNaN(t))return;delete adminPasswords[t];delete adminLoggedIn[t];ownerState=null;send(OWNER_ID,"🚫 Removed",{reply_markup:ownerMenu});return;}
-            else if(s.action==="genkey"){const d=parseInt(text);if(isNaN(d)||d<1)return send(OWNER_ID,"❌ Days?");const k=generateKey(d,OWNER_ID);ownerState=null;return send(OWNER_ID,"🔑 Key:\n\n"+k+"\n\n"+d+"d\n/key "+k,{reply_markup:ownerMenu});}
-            else if(s.action==="adduser"){if(!s.step2){const t=parseInt(text);if(isNaN(t))return send(OWNER_ID,"❌");ownerState={action:"adduser",step2:true,tid:t};return send(OWNER_ID,"ID:"+t+"\nDays?");}else{const d=parseInt(text);if(isNaN(d)||d<1)return send(OWNER_ID,"❌");usersAccess[s.tid]=Date.now()+d*86400000;ownerState=null;send(OWNER_ID,"✅ "+s.tid+" "+d+"d",{reply_markup:ownerMenu});send(s.tid,"🎊 VIP! "+d+" days\n▶️ Start Prediction!");return;}}
-            else if(s.action==="removeuser"){const t=parseInt(text);if(isNaN(t))return;if(Number(t)===Number(OWNER_ID))return send(OWNER_ID,"❌ Owner access cannot be removed.",{reply_markup:ownerMenu});const was=hasAccess(t);delete usersAccess[t];running[t]=false;ownerState=null;send(OWNER_ID,was?"🚫 Removed":"⚠️ Not active",{reply_markup:ownerMenu});if(was)send(t,"🔴 Access removed.");return;}
-            else if(s.action==="settoken"){GLOBAL_TOKEN=text.trim().replace(/^Bearer\s+/i,"");ownerState=null;return send(OWNER_ID,"✅ Global Token set!",{reply_markup:ownerMenu});}
+        if(isOwner(id) && ownerState[id]){
+            const s = ownerState[id];
+            if(s.action==="login"){if(text===OWNER_PASS){ownerLoggedIn[id]=true;ownerState[id]=null;return send(id,"👑 Welcome!",{reply_markup:ownerMenu});}else return send(id,"❌ Wrong!");}
+            if(OB.includes(text)){ownerState[id]=null;}
+            else if(s.action==="addadmin"){if(!s.step2){const t=parseInt(text);if(isNaN(t))return send(id,"❌");ownerState[id]={action:"addadmin",step2:true,tid:t};return send(id,"ID:"+t+"\nPassword:");}else{if(text.length<6)return send(id,"❌ Min 6");adminPasswords[s.tid]=text;adminLoggedIn[s.tid]=false;ownerState[id]=null;send(id,"✅ Admin: "+s.tid,{reply_markup:ownerMenu});send(s.tid,"🎉 Admin!\n/adminlogin "+text);return;}}
+            else if(s.action==="removeadmin"){const t=parseInt(text);if(isNaN(t))return;delete adminPasswords[t];delete adminLoggedIn[t];ownerState[id]=null;send(id,"🚫 Removed",{reply_markup:ownerMenu});return;}
+            else if(s.action==="genkey"){const d=parseInt(text);if(isNaN(d)||d<1)return send(id,"❌ Days?");const k=generateKey(d,OWNER_ID);ownerState[id]=null;return send(id,"🔑 Key:\n\n"+k+"\n\n"+d+"d\n/key "+k,{reply_markup:ownerMenu});}
+            else if(s.action==="adduser"){if(!s.step2){const t=parseInt(text);if(isNaN(t))return send(id,"❌");ownerState[id]={action:"adduser",step2:true,tid:t};return send(id,"ID:"+t+"\nDays?");}else{const d=parseInt(text);if(isNaN(d)||d<1)return send(id,"❌");usersAccess[s.tid]=Date.now()+d*86400000;ownerState[id]=null;send(id,"✅ "+s.tid+" "+d+"d",{reply_markup:ownerMenu});send(s.tid,"🎊 VIP! "+d+" days\n▶️ Start Prediction!");return;}}
+            else if(s.action==="removeuser"){const t=parseInt(text);if(isNaN(t))return;if(OWNER_IDS.includes(Number(t)))return send(id,"❌ Owner access cannot be removed.",{reply_markup:ownerMenu});const was=hasAccess(t);delete usersAccess[t];running[t]=false;ownerState[id]=null;send(id,was?"🚫 Removed":"⚠️ Not active",{reply_markup:ownerMenu});if(was)send(t,"🔴 Access removed.");return;}
+            else if(s.action==="settoken"){GLOBAL_TOKEN=text.trim().replace(/^Bearer\s+/i,"");ownerState[id]=null;return send(id,"✅ Global Token set!",{reply_markup:ownerMenu});}
         }
 
-        if(id===OWNER_ID&&ownerLoggedIn){
-            if(text==="👥 All Users")    return send(OWNER_ID,"👥\n\n"+activeUsersList());
-            if(text==="👮 All Admins")   return send(OWNER_ID,"👮\n\n"+adminList());
-            if(text==="👤 Add Admin")    {ownerState={action:"addadmin"};return send(OWNER_ID,"User ID:");}
-            if(text==="🗑 Remove Admin") {ownerState={action:"removeadmin"};return send(OWNER_ID,"Admin ID:");}
-            if(text==="🔑 Generate Key") {ownerState={action:"genkey"};return send(OWNER_ID,"Days?");}
-            if(text==="📋 All Keys")     return send(OWNER_ID,"📋\n\n"+allKeysList());
-            if(text==="🟢 Add User")     {ownerState={action:"adduser"};return send(OWNER_ID,"User ID:");}
-            if(text==="🔴 Remove User")  {ownerState={action:"removeuser"};return send(OWNER_ID,"User ID?");}
-            if(text==="🔐 Set Token")    {ownerState={action:"settoken"};return send(OWNER_ID,"Token paste:");}
+        if(isOwner(id)&&ownerLoggedIn[id]){
+            if(text==="👥 All Users")    return send(id,"👥\n\n"+activeUsersList());
+            if(text==="👮 All Admins")   return send(id,"👮\n\n"+adminList());
+            if(text==="👤 Add Admin")    {ownerState[id]={action:"addadmin"};return send(id,"User ID:");}
+            if(text==="🗑 Remove Admin") {ownerState[id]={action:"removeadmin"};return send(id,"Admin ID:");}
+            if(text==="🔑 Generate Key") {ownerState[id]={action:"genkey"};return send(id,"Days?");}
+            if(text==="📋 All Keys")     return send(id,"📋\n\n"+allKeysList());
+            if(text==="🟢 Add User")     {ownerState[id]={action:"adduser"};return send(id,"User ID:");}
+            if(text==="🔴 Remove User")  {ownerState[id]={action:"removeuser"};return send(id,"User ID?");}
+            if(text==="🔐 Set Token")    {ownerState[id]={action:"settoken"};return send(id,"Token paste:");}
             if(text==="📊 All Status")    {
                 const ids = Object.keys(usersAccess);
-                if(ids.length === 0) return send(OWNER_ID, "No users found.");
+                if(ids.length === 0) return send(id, "No users found.");
                 let report = "📊 TEAM MEMBERS ALL STATUS 📊\n\n";
                 ids.forEach(uid => {
                     initUser(uid);
@@ -1496,9 +1594,9 @@ function addHandlers(){
                     report += `📊 Win/Loss: ${pt.wins}W / ${pt.losses}L\n`;
                     report += `------------------------\n`;
                 });
-                return send(OWNER_ID, report);
+                return send(id, report);
             }
-            if(text==="🚪 Owner Logout") {ownerLoggedIn=false;return send(OWNER_ID,"🔒 Out.",{reply_markup:userMenu(id)});}
+            if(text==="🚪 Owner Logout") {ownerLoggedIn[id]=false;return send(id,"🔒 Out.",{reply_markup:userMenu(id)});}
         }
 
         if(isAdmin(id) && isAdminIn(id) && adminState[id]){
@@ -1654,7 +1752,16 @@ if(text==="🔢 Set Watch Losses"){
             if(running[id])return send(msg.chat.id,"⚠️ Already running!");
 
             running[id]=true;sentPeriods[id]=new Set();
-            autobetState[id]={level:1,consecutiveLoss:0,inMart:false};
+            autobetState[id]={
+                level:1,
+                consecutiveLoss:0,
+                levelLossCount:0,
+                waitingAction:null,
+                waitingTarget:0,
+                watchConsecutiveLosses:0,
+                skipRemaining:0,
+                inMart:false
+            };
 
             // Load previous B/S history from API
             const prevList = await fetchList();
