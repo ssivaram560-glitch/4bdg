@@ -14,10 +14,10 @@ process.on('unhandledRejection', (reason) => {
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAEnqt64FcSqVlwG9LRysF3BCMSG02j2nJ4";
-const OWNER_IDS    = [1865939951, 8321379592];
-const OWNER_ID     = OWNER_IDS[0];
-const OWNER_PASS   = "Praveensaran";
+// ============================================================
+const BOT_TOKEN    ="8999335291:AAH-e-xo1Bn7bWqH_OxJUOLYhO43au5PWXs";
+const OWNER_ID     = 1865939951;
+const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
 
 const REG_LINK     = "https://bdgwinuu.com/#/register?invitationCode=7442815992780";
