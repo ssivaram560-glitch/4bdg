@@ -1549,6 +1549,8 @@ function addHandlers(){
     });
 
     bot.on("message",async msg=>{
+        // Guard: channel posts / bot messages have no sender → msg.from is null
+        if(!msg || !msg.from){ return; }
         const id=msg.from.id,text=msg.text;
         if(!text||text.startsWith("/"))return;
         initUser(id);
