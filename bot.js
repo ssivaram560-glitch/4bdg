@@ -279,7 +279,7 @@ async function getLiveBalance(userId, chatId = null) {
 
 function initUser(id) {
     if (!stats[id])        stats[id]        = { total:0,win:0,loss:0,lossStreak:0,winStreak:0,maxWinStreak:0,maxLossStreak:0 };
-   if (!userStates[id])   userStates[id]   = { resultHistory:[], skipCount:0, currentMode:null, lastPrediction:null };
+    if (!userStates[id])   userStates[id]   = { resultHistory:[], currentMode:null, lastPrediction:null };
     if (!sentPeriods[id])  sentPeriods[id]  = new Set();
     if (!autobetCfg[id])   autobetCfg[id]   = { 
         watch:false, 
@@ -298,7 +298,6 @@ function initUser(id) {
         waitingAction: null,
         waitingTarget: 0,
         watchConsecutiveLosses: 0,
-        skipRemaining: 0,
         inMart:false,
         isWaiting: false,      // NEW: Bot waiting-la irukka-nu check panna
         nextStartTime: null    // NEW: Thirumba eppo start aakanum-nu store panna
@@ -316,10 +315,8 @@ function loadPersistentData() {
         console.warn("[DATA] Could not load bot_data.json, initializing new store.");
         persistentData = {};
     }
-    if (!persistentData.dangerTriples) persistentData.dangerTriples = {};
     if (!persistentData.keyStore) persistentData.keyStore = {};
     if (!persistentData.usersAccess) persistentData.usersAccess = {};
-    if (!persistentData.dangerConfig) persistentData.dangerConfig = { pairThreshold: 1, tripleThreshold: 3, recordPairs: true };
     keyStore = persistentData.keyStore;
     usersAccess = persistentData.usersAccess;
 }
@@ -327,8 +324,6 @@ function savePersistentData() {
     try {
         const current = fs.existsSync("bot_data.json") ? JSON.parse(fs.readFileSync("bot_data.json","utf8")||"{}") : {};
         // Merge known persistent stores
-        current.dangerTriples = persistentData.dangerTriples || {};
-        current.dangerConfig = persistentData.dangerConfig || { pairThreshold: 1, tripleThreshold: 3 };
         current.keyStore      = keyStore                    || {};
         current.usersAccess   = usersAccess                 || {};
         fs.writeFileSync("bot_data.json", JSON.stringify(current, null, 2), "utf8");
@@ -336,64 +331,21 @@ function savePersistentData() {
         console.error("[DATA] Failed to save bot_data.json:", e.message);
     }
 }
-
 loadPersistentData();
-
-// Expire danger triples older than 8 hours
-const PAIR_EXPIRY_MS = 8 * 60 * 60 * 1000; // 8 hours
-function cleanupOldTriples() {
-    if (!persistentData.dangerTriples) return;
-    const now = Date.now();
-    let changed = false;
-    for (const [k, v] of Object.entries(persistentData.dangerTriples)) {
-        if (!v || !v.lastSeen) continue;
-        if (now - v.lastSeen > PAIR_EXPIRY_MS) {
-            // reset the triple
-            delete persistentData.dangerTriples[k];
-            changed = true;
-            console.log(`[DANGER CLEANUP] Removed triple ${k} due to age > 2h`);
-        }
-    }
-    if (changed) savePersistentData();
-}
-
-// Run cleanup on load and periodically every 30 minutes
-cleanupOldTriples();
-setInterval(cleanupOldTriples, 30 * 60 * 1000);
 
 // Expire danger pairs older than the same TTL
 function cleanupOldPairs() {
-    // Pair-based danger tracking has been removed. This function is a no-op.
+    // Deprecated: no-op kept for compatibility.
     return;
 }
 
 async function recordDangerTriple(tripleKey, chatId = null) {
-    if (!tripleKey) return;
-    if (!persistentData.dangerTriples) persistentData.dangerTriples = {};
-    if (!persistentData.dangerTriples[tripleKey]) persistentData.dangerTriples[tripleKey] = { count: 0, skip: false, lastSeen: 0 };
-    persistentData.dangerTriples[tripleKey].count = (persistentData.dangerTriples[tripleKey].count || 0) + 1;
-    persistentData.dangerTriples[tripleKey].lastSeen = Date.now();
-    const count = persistentData.dangerTriples[tripleKey].count;
-    const tripleThreshold = (persistentData.dangerConfig && persistentData.dangerConfig.tripleThreshold) || 3;
-    if (count >= tripleThreshold) {
-        persistentData.dangerTriples[tripleKey].skip = true;
-        console.log(`[DANGER] Triple ${tripleKey} reached count=${count} -> SKIP`);
-    } else {
-        console.log(`[DANGER] Triple ${tripleKey} incremented to ${count}`);
-    }
-    savePersistentData();
-
-    const recipient = chatId || OWNER_ID;
-    const msg = `⚠️ Danger triple recorded: ${tripleKey}\nCount: ${count}\n${count >= tripleThreshold ? 'SKIP activated' : 'SKIP pending'}`;
-    try {
-        await send(recipient, msg);
-    } catch (e) {
-        console.error(`[DANGER] Failed to send notification: ${e.message}`);
-    }
+    // Deprecated: removed persistent danger tracking.
+    return;
 }
 
 async function recordDangerPair(pairKey, chatId = null) {
-    // Pair-based danger recording removed. Do nothing.
+    // Deprecated: removed persistent pair tracking.
     return;
 }
 
@@ -852,12 +804,12 @@ function initState(userId) {
             consecutivePatternLoss: 0,
             predictionOutcomes: [],
             resultSizeHistory: [],
-            // patternStats and dangerPatterns storage disabled — only persistent last-two pairs are used
-            skipRemaining: 0,
+            // patternStats and dangerPatterns storage disabled
             c4Active: false,
             c5Triggered: false,
                 awaitingSamePair: false,
                 alt4Active: false,
+                ababActive: false,
             lastDecisionSource: null,
             lastLossLevel: 0,
             l5RecoveryMode: false
@@ -873,11 +825,12 @@ function initState(userId) {
         if (userStates[userId].predictionOutcomes === undefined) userStates[userId].predictionOutcomes = [];
         if (userStates[userId].resultSizeHistory === undefined) userStates[userId].resultSizeHistory = [];
         // patternStats/dangerPatterns intentionally not initialized — storage disabled
-        if (userStates[userId].skipRemaining === undefined) userStates[userId].skipRemaining = 0;
+        // skip counters removed
         if (userStates[userId].c4Active === undefined) userStates[userId].c4Active = false;
         if (userStates[userId].c5Triggered === undefined) userStates[userId].c5Triggered = false;
         if (userStates[userId].awaitingSamePair === undefined) userStates[userId].awaitingSamePair = false;
         if (userStates[userId].alt4Active === undefined) userStates[userId].alt4Active = false;
+        if (userStates[userId].ababActive === undefined) userStates[userId].ababActive = false;
         if (userStates[userId].lastDecisionSource === undefined) userStates[userId].lastDecisionSource = null;
         if (userStates[userId].lastLossLevel === undefined) userStates[userId].lastLossLevel = 0;
         if (userStates[userId].l5RecoveryMode === undefined) userStates[userId].l5RecoveryMode = false;
@@ -903,6 +856,15 @@ function isAlternating4Pattern(sizes) {
     if (!sizes || sizes.length < 4) return false;
     const last4 = sizes.slice(-4).map(v => v === 'BIG' ? 'B' : 'S').join('');
     return last4 === 'BSBS' || last4 === 'SBSB';
+}
+
+function isAlternating(sizes, minLen = 4) {
+    if (!sizes || sizes.length < minLen) return false;
+    // Ensure the sequence alternates for the provided slice
+    for (let i = 1; i < sizes.length; i++) {
+        if (sizes[i] === sizes[i - 1]) return false;
+    }
+    return true;
 }
 
 function hasTripleInLastFive(numbers) {
@@ -933,18 +895,17 @@ function getPatternPrediction(patternKey) {
 }
 
 function findDangerPattern(state, patternKeys) {
-    // Pattern-based danger lookup removed — only persistent last-two pairs are considered dangerous.
+    // Deprecated: pattern danger lookup disabled.
     return null;
 }
 
 function findBestWinPattern(state, patternKeys) {
-    // Pattern-based suggestions disabled. Return null to avoid using stored pattern stats.
+    // Deprecated: pattern memory disabled.
     return null;
 }
 
 function updatePatternMemory(userId, sizeHistory, wasWin) {
-    // Pattern-derived memory storage disabled. This function intentionally
-    // does nothing to avoid creating in-memory pattern-based danger entries.
+    // Deprecated: no-op to remove pattern memory.
     return;
 }
 
@@ -980,29 +941,7 @@ function decidePrediction(list, currentLevel, userId) {
     const latestResult = last5Sizes[last5Sizes.length - 1] || "SMALL";
     const normalPrediction = getNormalPrediction(last5Sizes);
 
-    // New: check persistent danger-triples (last three numeric results)
-    const tripleThreshold = (persistentData.dangerConfig && persistentData.dangerConfig.tripleThreshold) || 3;
-    const pairThreshold = (persistentData.dangerConfig && persistentData.dangerConfig.pairThreshold) || 1;
-
-    if (numbers && numbers.length >= 3) {
-        const lastThreeNums = numbers.slice(-3);
-        const tripleKey = String(lastThreeNums[0]) + String(lastThreeNums[1]) + String(lastThreeNums[2]);
-        const dp = persistentData.dangerTriples && persistentData.dangerTriples[tripleKey];
-        if (dp && dp.count >= tripleThreshold) {
-            state.lastDecisionSource = "DANGER_TRIPLE";
-            // mark skip but still return a prediction value (so callers can display it)
-            state.skipRemaining = Math.max(state.skipRemaining || 0, 2);
-            return {
-                type: "SIZE",
-                val: normalPrediction,
-                skip: true,
-                conf: 0,
-                pat: "DANGER_TRIPLE",
-                reason: "DANGER_TRIPLE:" + tripleKey
-            };
-        }
-    }
-    // Pair-based danger checks removed per configuration (pairs disabled).
+    // Persistent danger/pair/triple logic removed. Proceed to normal checks only.
     const violetCount = numbers.slice(-5).filter(num => num === 0 || num === 5).length;
     const repeatedNumber = hasTripleInLastFive(numbers);
     const c3Trigger = last6Sizes.length >= 6 && (last6Sizes.join("") === "BBBSSS" || last6Sizes.join("") === "SSSBBB");
@@ -1012,41 +951,38 @@ function decidePrediction(list, currentLevel, userId) {
     const recentOutcomes = (state.predictionOutcomes || []).slice(-5);
     const c5Trigger = recentOutcomes.length === 5 && recentOutcomes.every(outcome => outcome === "LOSS");
     const patternKeys = buildPatternKeys(sizes);
-    const highWinPattern = findBestWinPattern(state, patternKeys);
+    const highWinPattern = null; // pattern memory disabled
 
     // NOTE: dangerousPattern checks removed. Only persistent
     // last-two-number pairs (persistentData.dangerPairs) are treated
     // as danger. Pattern-derived danger (state.dangerPatterns) is
     // intentionally ignored per updated rule.
 
-    if ((state.lastLossLevel === 5 || state.l5RecoveryMode) && highWinPattern) {
-        const val = getPatternPrediction(highWinPattern.key);
-        state.lastDecisionSource = "L5PATTERN";
-        return {
-            type: "SIZE",
-            val,
-            conf: 92,
-            pat: "L5PATTERN",
-            reason: "L5PATTERN:" + highWinPattern.key
-        };
-    }
+    // L5 recovery pattern logic disabled (pattern memory removed)
 
-    if (c5Trigger) {
-        state.c5Triggered = true;
-        state.c4Active = false;
-        state.skipRemaining = 0;
-        state.lastDecisionSource = "C5";
-        return {
-            type: "SIZE",
-            val: getNormalPrediction(last5Sizes),
-            conf: 98,
-            pat: "C5",
-            reason: "C5"
-        };
-    }
+    // C5 logic simplified: don't force skip, continue normal prediction
 
     // ALT4 detection: enter active mode where we predict opposite of latest
-    // result on every cycle until a loss occurs (then ALT4 mode is cleared).
+    // ABAB detection: if recent results alternate (ABAB...), enter ABAB follow mode
+    const alternates = isAlternating(last6Sizes) || isAlternating(last4Sizes);
+    if (alternates) {
+        state.ababActive = true;
+    }
+
+    // If ABAB mode is active, follow the alternating pattern (predict opposite of last result)
+    if (state.ababActive) {
+        state.lastDecisionSource = "ABAB";
+        return {
+            type: "SIZE",
+            val: getOppositePrediction(latestResult),
+            skip: false,
+            conf: 92,
+            pat: "ABAB",
+            reason: "ABAB"
+        };
+    }
+
+    // ALT4 fallback: if detected, behave similarly (legacy)
     if (alternating4WaitTrigger && !sameLastPair) {
         state.alt4Active = true;
         state.lastDecisionSource = "ALT4_ACTIVE";
@@ -1060,21 +996,6 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    if (state.c4Active || c4Trigger) {
-        if (c4Trigger) {
-            state.c4Active = true;
-        }
-        state.lastDecisionSource = "C4";
-        return {
-            type: "SIZE",
-            val: getOppositePrediction(latestResult),
-            conf: 95,
-            pat: "C4",
-            reason: "C4"
-        };
-    }
-    // if ALT4 mode is active (from previous detection), continue predicting
-    // opposite of latest result until a loss clears the mode.
     if (state.alt4Active) {
         state.lastDecisionSource = "ALT4_ACTIVE";
         return {
@@ -1087,65 +1008,24 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    if (state.skipRemaining > 0) {
-        state.skipRemaining = Math.max(0, state.skipRemaining - 1);
-        state.lastDecisionSource = "SKIP";
-        return {
-            type: "SIZE",
-            val: normalPrediction,
-            skip: true,
-            conf: 0,
-            pat: "SKIP",
-            reason: "SKIP"
-        };
-    }
+    // Skip counters removed from decision flow
 
-    if (violetCount >= 3) {
-        state.skipRemaining = 3;
-        state.lastDecisionSource = "C1";
-        return {
-            type: "SIZE",
-            val: normalPrediction,
-            skip: true,
-            conf: 0,
-            pat: "C1",
-            reason: "C1"
-        };
-    }
+    // Special-case skip rules removed (violet, repeated number, BBBSSS)
 
-    if (repeatedNumber !== null) {
-        state.skipRemaining = 3;
-        state.lastDecisionSource = "C2";
-        return {
-            type: "SIZE",
-            val: normalPrediction,
-            skip: true,
-            conf: 0,
-            pat: "C2",
-            reason: "C2"
-        };
-    }
+    // Apply 8-level rule mapping: map any level into 1..8
+    const mappedLevel = ((Number(currentLevel) - 1) % 8) + 1;
+    let predictedVal = normalPrediction;
+    const prev = latestResult || normalPrediction;
+    if (mappedLevel === 5) predictedVal = getOppositePrediction(prev);
+    else predictedVal = prev; // L1-L4 and L6-L8: same as previous
 
-    if (c3Trigger) {
-        state.skipRemaining = 5;
-        state.lastDecisionSource = "C3";
-        return {
-            type: "SIZE",
-            val: normalPrediction,
-            skip: true,
-            conf: 0,
-            pat: "C3",
-            reason: "C3"
-        };
-    }
-
-    state.lastDecisionSource = "NORMAL";
+    state.lastDecisionSource = `L${mappedLevel}`;
     return {
         type: "SIZE",
-        val: normalPrediction,
+        val: predictedVal,
         conf: 85,
-        pat: "NORMAL",
-        reason: "NORMAL"
+        pat: `L${mappedLevel}`,
+        reason: `LEVEL_${mappedLevel}`
     };
 }
 
@@ -1164,8 +1044,11 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
         updatePatternMemory(userId, state.resultSizeHistory, wasWin);
     }
 
+    if (isSkip) {
+        return;
+    }
     const outcome = wasWin ? "WIN" : "LOSS";
-    state.predictionOutcomes.push(isSkip ? "SKIP" : outcome);
+    state.predictionOutcomes.push(outcome);
     if (state.predictionOutcomes.length > 5) {
         state.predictionOutcomes.shift();
     }
@@ -1175,7 +1058,6 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
             state.c4Active = true;
         } else {
             state.c4Active = false;
-            state.skipRemaining = 2;
         }
     } else if (state.lastDecisionSource === "C5") {
         state.c5Triggered = false;
@@ -1220,16 +1102,26 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
         const st = autobetState[userId];
         const cfg = autobetCfg[userId];
 
-        if (betPlaced && wasWin) {
+        // If ABAB follow was active and a placed bet lost, clear ABAB and reset to L1
+        if (state.ababActive && betPlaced && !wasWin) {
+            state.ababActive = false;
+            st.level = 1;
+        }
+
+            if (betPlaced && wasWin) {
             st.level = 1;
             st.consecutiveLoss = 0;
             st.levelLossCount = 0;
             st.waitingAction = null;
             st.waitingTarget = 0;
             st.watchConsecutiveLosses = 0;
-            st.skipRemaining = 0;
-            state.lastLossLevel = 0;
-            state.l5RecoveryMode = false;
+                // If this was a level-5 win, treat it as ABAB trend start
+                if (betLevel === 5) {
+                    state.ababActive = true;
+                    console.log(`[ABAB] User ${userId} L5 win -> ABAB active`);
+                }
+                state.lastLossLevel = 0;
+                state.l5RecoveryMode = false;
             return false;
         }
 
@@ -1245,17 +1137,15 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
                 st.waitingAction = 'watch';
                 st.waitingTarget = currentRule.lossesRequired;
                 st.watchConsecutiveLosses = 0;
-                st.skipRemaining = 0;
             } else if (currentRule.type === 'skip') {
-                st.waitingAction = 'skip';
+                // 'skip' rule removed: treat as immediate waitingAction with target but without skip counter
+                st.waitingAction = 'watch';
                 st.waitingTarget = currentRule.skipPeriods;
-                st.skipRemaining = currentRule.skipPeriods;
                 st.watchConsecutiveLosses = 0;
             } else {
                 st.waitingAction = null;
                 st.waitingTarget = 0;
                 st.watchConsecutiveLosses = 0;
-                st.skipRemaining = 0;
             }
 
             if (cfg && cfg.watch) {
@@ -1279,12 +1169,6 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
                 st.waitingTarget = 0;
                 st.watchConsecutiveLosses = 0;
             }
-        } else if (st.waitingAction === 'skip') {
-            st.skipRemaining = Math.max(0, st.skipRemaining - 1);
-            if (st.skipRemaining === 0) {
-                st.waitingAction = null;
-                st.waitingTarget = 0;
-            }
         } else if (cfg && cfg.watch) {
             if (wasWin) {
                 st.consecutiveLoss = 0;
@@ -1297,7 +1181,6 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
     // If ALT4 active mode was running, clear it on a loss (stop when one loss occurs)
     if (state.alt4Active && !wasWin) {
         state.alt4Active = false;
-        state.skipRemaining = 0;
     }
 
     return false;
@@ -1317,6 +1200,9 @@ async function handleWin(userId, chatId, actual, num, betLevel) {
     const cfg = autobetCfg[userId];
     const amt = getBetAmount(userId, betLevel);
     const profit = amt * 0.98;
+    if (autobetState && autobetState[userId]) {
+        autobetState[userId].level = 1;
+    }
     
     pt.totalBets++; pt.wins++; pt.pnl += profit; 
     pt.totalBetAmount = (pt.totalBetAmount || 0) + amt;
@@ -1433,15 +1319,9 @@ async function runPredict(userId, chatId) {
     const signal = decidePrediction(list, st.level, userId);
     if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
 
-    const waitingDueToLevel = st.waitingAction === 'watch' || st.waitingAction === 'skip';
+    const waitingDueToLevel = st.waitingAction === 'watch';
     const alt4Override = state.alt4Active === true;
-    if (signal.skip && !waitingDueToLevel) {
-        // For skip cases we still produce a prediction for monitoring.
-        await send(chatId, `⏭️ Skip Round (${signal.reason}) — monitoring prediction: ${signal.val}. No bet placed.`);
-        // Start result watcher without placing a bet so we can record outcomes and danger patterns.
-        checkResult(userId, chatId, next, signal.val, signal.type, false);
-        return;
-    }
+    // No skip handling — always proceed with normal prediction flow
 
     let abLine = "🤖 AutoBet: OFF";
     let canBet = false;
@@ -1455,9 +1335,6 @@ async function runPredict(userId, chatId) {
         if (st.waitingAction === 'watch') {
             waitLine = `\nWatch: ${st.watchConsecutiveLosses}/${st.waitingTarget} losses`;
             abLine = `👀 WATCH MODE (${st.level})`;
-        } else if (st.waitingAction === 'skip') {
-            waitLine = `\nSkip: ${st.skipRemaining} periods`;
-            abLine = `⏸ SKIP MODE (${st.level})`;
         }
     } else if (waitingDueToLevel && alt4Override) {
         // ALT4 active: override watch/skip and allow betting until a loss clears ALT4
@@ -1545,32 +1422,7 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         // for danger tracking. This happens when a bet was placed OR when
         // the decision originated from a skip-related reason (so skipped
         // predictions still contribute to dangerTriples).
-        if (!win) {
-            const lastDecision = (userStates[userId] && userStates[userId].lastDecisionSource) || null;
-            const skipOrigins = new Set(["DANGER_TRIPLE", "SKIP", "C1", "C2", "C3", "ALT4_ACTIVE"]);
-            const shouldRecord = betPlaced || (lastDecision && skipOrigins.has(lastDecision));
-            if (shouldRecord) {
-                // try to pick previous two numbers: prefer the state's history
-                const hist = userStates[userId].resultNumberHistory;
-                let a, b, c;
-                if (hist && hist.length >= 3) {
-                    a = hist[hist.length - 3];
-                    b = hist[hist.length - 2];
-                    c = hist[hist.length - 1];
-                } else if (list && list.length >= 3) {
-                    // fallback using the fetched list (most recent first)
-                    const nums = list.slice(0, 3).map(i => parseInt(i.number || i.winNumber || 0));
-                    // nums[0] is latest, nums[2] is third latest
-                    a = nums[2]; b = nums[1]; c = nums[0];
-                }
-                if (typeof a !== 'undefined' && typeof b !== 'undefined' && typeof c !== 'undefined') {
-                    const tripleKey = String(a) + String(b) + String(c);
-                    await recordDangerTriple(tripleKey, chatId);
-                }
-                
-                // Pair recording disabled — only triples are persisted as danger indicators.
-                }
-        }
+        // Removed persistent danger/pair recording; no action needed on loss.
 
         const s = stats[userId];
         s.total++;
@@ -2050,7 +1902,6 @@ if(text==="🔢 Set Watch Losses"){
                 waitingAction:null,
                 waitingTarget:0,
                 watchConsecutiveLosses:0,
-                skipRemaining:0,
                 inMart:false
             };
 
