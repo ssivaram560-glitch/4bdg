@@ -851,9 +851,11 @@ function initState(userId) {
                 ababActive: false,
             lastDecisionSource: null,
             lastLossLevel: 0,
-            l5RecoveryMode: false
+            l5RecoveryMode: false,
+            alterPatternMode: false
         };
     } else {
+        if (userStates[userId].alterPatternMode === undefined) userStates[userId].alterPatternMode = false;
         if (!userStates[userId].historyModes) userStates[userId].historyModes = [];
         if (!userStates[userId].forcedModeQueue) userStates[userId].forcedModeQueue = [];
         if (userStates[userId].periodCounter === undefined) userStates[userId].periodCounter = 0;
@@ -1007,33 +1009,58 @@ function decidePrediction(list, currentLevel, userId) {
 
     // Apply 9-level rule mapping: map any level into 1..9
     const mappedLevel = ((Number(currentLevel) - 1) % 9) + 1;
-    let predictedVal = normalPrediction;
+    let predictedVal;
     const prev = latestResult || normalPrediction;
 
-    // L5, L7, L8 — Exact Rule Implementation
-    if (mappedLevel === 5 || mappedLevel === 7 || mappedLevel === 8) {
-        // Step 1: Check latest 5 actual results for BSBSB or SBSBS
-        const patternStr = last5Sizes.map(s => s === "BIG" ? "B" : "S").join("");
-        const isAlternatingPattern = (patternStr === "BSBSB" || patternStr === "SBSBS");
-
-        if (isAlternatingPattern) {
-            // Rule: Prediction = OPPOSITE of latest result
-            predictedVal = getOppositePrediction(prev);
-        } else {
-            // Rule: Normal level rule (L5, L7, and L8 are all OPPOSITE)
-            predictedVal = getOppositePrediction(prev);
-        }
+    // Default Level Rules (Normal Way)
+    // L5, L6: OPPOSITE, L7, L8: SAME, Others: SAME
+    if (mappedLevel === 5 || mappedLevel === 6) {
+        predictedVal = getOppositePrediction(prev);
     } else {
-        // L1-L4, L6, L9: Normal level rule (SAME)
+        // L1-L4, L7, L8, L9: SAME
         predictedVal = prev;
     }
 
-    state.lastDecisionSource = `L${mappedLevel}`;
+    // 1) Read last 7 results and check for trends (SSSS or BBBB)
+    const last7Sizes = sizes.slice(-7);
+    const last7Str = last7Sizes.map(s => s === "BIG" ? "B" : "S").join("");
+    const hasTrend = last7Str.includes("SSSS") || last7Str.includes("BBBB");
+
+    state.lastDecisionSource = null;
+
+    if (!hasTrend && last7Sizes.length >= 3) {
+        // ELSE: Check for BSB/SBS and handle Alternation Mode
+        if (state.alterPatternMode) {
+            if (state.lastPredictionWasLoss) {
+                state.alterPatternMode = false;
+                // Reverts to Level Rule predictedVal already set above
+            } else {
+                // Continue alternating until a loss occurs
+                predictedVal = getOppositePrediction(prev);
+                state.lastDecisionSource = "ALTER_CONT";
+            }
+        }
+
+        // If not in mode (or just reset), check for trigger
+        if (!state.alterPatternMode) {
+            const last3Str = last7Str.slice(-3);
+            if (last3Str === "BSB" || last3Str === "SBS") {
+                predictedVal = getOppositePrediction(prev);
+                state.alterPatternMode = true;
+                state.lastDecisionSource = "ALTER_START";
+            }
+        }
+    }
+
+    if (!state.lastDecisionSource) {
+        state.lastDecisionSource = `L${mappedLevel}`;
+    }
+
     return {
         type: "SIZE",
         val: predictedVal,
         conf: 85,
-        pat: `L${mappedLevel}`,
+        pat: state.lastDecisionSource,
         reason: `LEVEL_${mappedLevel}`
     };
 }
