@@ -510,7 +510,22 @@ async function autoLogin(userId, chatId, silent = false) {
         await logBoth(chatId, `[AUTO LOGIN] User ${userId} has no phone or password set.`);
         return false;
     }
-   let browser;
+
+    // Browser Queue / Lock to prevent OOM on Render
+    if (browserLock) {
+        if (!silent) await logBoth(chatId, "⏳ System busy... waiting for login queue.");
+        for (let i = 0; i < 45; i++) {
+            if (!browserLock) break;
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        if (browserLock) {
+            if (!silent) await logBoth(chatId, "⚠️ System too busy. Please try again in a minute.");
+            return false;
+        }
+    }
+
+    browserLock = true;
+    let browser;
     try {
         browser = await puppeteer.launch({
             headless: true,
@@ -617,7 +632,14 @@ async function autoLogin(userId, chatId, silent = false) {
         await logBoth(chatId, `❌ Login Error for user ${userId}: ${err.message}`, true);
         return false;
     } finally {
-        if (browser) await browser.close();
+        if (browser) {
+            try {
+                await browser.close();
+            } catch (e) {
+                console.error("[BROWSER] Error closing:", e.message);
+            }
+        }
+        browserLock = false;
     }
 }
 
@@ -1351,17 +1373,18 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
     const st = autobetState[userId];
     const pt = profitTrack[userId];
     
-    const iv = setInterval(async () => {
-        if (!running[userId]) return clearInterval(iv);
+    const poll = async () => {
+        if (!running[userId]) return;
         if (++tries > 25) {
-            clearInterval(iv);
             await logBoth(chatId, "⏱ Timeout — checking next period...");
             setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
             return;
         }
-        const list = await fetchList(); if (!list) return;
-        if (BigInt(list[0].issueNumber) < BigInt(target)) return;
-        clearInterval(iv);
+
+        const list = await fetchList(); 
+        if (!list || BigInt(list[0].issueNumber) < BigInt(target)) {
+            return setTimeout(poll, 10000);
+        }
 
         const res = list.find(i => i.issueNumber === target) || list[0];
         const num = parseInt(res.number || res.winNumber || 0);
@@ -1438,7 +1461,8 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         }
 
         setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 8000);
-    }, 10000);
+    };
+    setTimeout(poll, 10000);
 }
 
 module.exports = { decidePrediction, updateAfterResult, getStatus, initState, buildBSFromList, runPredict, checkResult };
@@ -1888,9 +1912,13 @@ if(text==="🔢 Set Watch Losses"){
         if(text==="🛑 Stop")   {
             running[id]=false;
             send(msg.chat.id,"🛑 Stopped.");
-            // Clean up heavy states to free memory
+            // Aggressive memory cleanup
             delete sentPeriods[id];
             delete userStates[id];
+            delete autobetState[id];
+            delete stats[id];
+            delete profitTrack[id];
+            if (global.gc) global.gc(); // Trigger GC if available
         }
         if(text==="📊 Stats")  showStats(msg.chat.id,id);
         if(text==="💰 Profit") profitReport(msg.chat.id,id);
