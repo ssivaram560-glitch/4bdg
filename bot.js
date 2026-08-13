@@ -176,6 +176,7 @@ if (RENDER_URL) {
 //  STORAGE
 // ============================================================
 let ownerLoggedIn  = false;
+let browserLock    = false;
 let adminPasswords = {};
 let adminLoggedIn  = {};
 let usersAccess    = {};
