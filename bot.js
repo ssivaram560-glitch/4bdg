@@ -61,6 +61,13 @@ const http = require('http');
 const PORT = process.env.PORT || 5000;
 const LOCAL_LOGIN_SECRET = process.env.LOCAL_LOGIN_SECRET || "local-secret";
 const localAuthTokens = new Set();
+// Clean up localAuthTokens periodically to prevent memory leak
+setInterval(() => {
+    if (localAuthTokens.size > 50) {
+        const first = localAuthTokens.values().next().value;
+        localAuthTokens.delete(first);
+    }
+}, 60 * 60 * 1000);
 
 function isLocalHostRequest(req) {
     const addr = req.socket.remoteAddress;
@@ -1271,7 +1278,7 @@ async function runPredict(userId, chatId) {
     const next = (BigInt(list[0].issueNumber)+1n).toString();
     if(sentPeriods[userId].has(next)) return setTimeout(()=>runPredict(userId,chatId), 2000);
     sentPeriods[userId].add(next);
-    if (sentPeriods[userId].size > 100) {
+    if (sentPeriods[userId].size > 50) {
         const firstItem = sentPeriods[userId].values().next().value;
         sentPeriods[userId].delete(firstItem);
     }
@@ -1878,7 +1885,13 @@ if(text==="🔢 Set Watch Losses"){
             );
             runPredict(id,msg.chat.id);
         }
-        if(text==="🛑 Stop")   {running[id]=false;send(msg.chat.id,"🛑 Stopped.");}
+        if(text==="🛑 Stop")   {
+            running[id]=false;
+            send(msg.chat.id,"🛑 Stopped.");
+            // Clean up heavy states to free memory
+            delete sentPeriods[id];
+            delete userStates[id];
+        }
         if(text==="📊 Stats")  showStats(msg.chat.id,id);
         if(text==="💰 Profit") profitReport(msg.chat.id,id);
         if(text==="📩 Contact") send(msg.chat.id,"📩 "+ADMIN_HANDLE+"\nID: "+id);
