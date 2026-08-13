@@ -8,7 +8,7 @@ const fs          = require('fs');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAGSZfKHvBv7f8eDzAh1pitxbdvFQhz1MOA"
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAFgHVTbDpWHlq2bscIbkiw6cs08CATeQpQ"
 const OWNER_ID     = 1865939951;
 const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
