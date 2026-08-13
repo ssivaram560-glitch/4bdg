@@ -506,8 +506,17 @@ async function autoLogin(userId, chatId, silent = false) {
    let browser;
     try {
         browser = await puppeteer.launch({
-            headless: true, 
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--single-process', '--disable-gpu']
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+                '--disable-gpu'
+            ]
         });
         const page = await browser.newPage();
         await page.setDefaultNavigationTimeout(90000); 
@@ -1262,6 +1271,10 @@ async function runPredict(userId, chatId) {
     const next = (BigInt(list[0].issueNumber)+1n).toString();
     if(sentPeriods[userId].has(next)) return setTimeout(()=>runPredict(userId,chatId), 2000);
     sentPeriods[userId].add(next);
+    if (sentPeriods[userId].size > 100) {
+        const firstItem = sentPeriods[userId].values().next().value;
+        sentPeriods[userId].delete(firstItem);
+    }
 
     const signal = decidePrediction(list, st.level, userId);
     if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
