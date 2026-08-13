@@ -969,18 +969,7 @@ function decidePrediction(list, currentLevel, userId) {
         state.ababActive = true;
     }
 
-    // If ABAB mode is active, follow the alternating pattern (predict opposite of last result)
-    if (state.ababActive) {
-        state.lastDecisionSource = "ABAB";
-        return {
-            type: "SIZE",
-            val: getOppositePrediction(latestResult),
-            skip: false,
-            conf: 92,
-            pat: "ABAB",
-            reason: "ABAB"
-        };
-    }
+    
 
     // ALT4 fallback: if detected, behave similarly (legacy)
     if (alternating4WaitTrigger && !sameLastPair) {
