@@ -24,14 +24,14 @@ const DRAW_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIss
 
 // Martingale multipliers — user can customize base bet
 const MULT = [1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683]; // Standard 3x Martingale multipliers
-const LEVEL_REQUIREMENTS = [1, 1, 1, 1, 5, 4, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+const LEVEL_REQUIREMENTS = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
 const LEVEL_RULES = {
     1: { type: 'none' },
     2: { type: 'none' },
     3: { type: 'none' },
     4: { type: 'none' },
-    5: { type: 'skip', skipPeriods: 5 },
-    6: { type: 'watch', lossesRequired: 4 },
+    5: { type: 'none' },
+    6: { type: 'none' },
     7: { type: 'none' },
     8: { type: 'none' },
     9: { type: 'none' },
