@@ -1010,10 +1010,21 @@ function decidePrediction(list, currentLevel, userId) {
     let predictedVal = normalPrediction;
     const prev = latestResult || normalPrediction;
 
-    // L1-L4: SAME, L5: OPPOSITE, L6: SAME, L7-L8: OPPOSITE, L9: SAME
+    // L5, L7, L8 — Exact Rule Implementation
     if (mappedLevel === 5 || mappedLevel === 7 || mappedLevel === 8) {
-        predictedVal = getOppositePrediction(prev);
+        // Step 1: Check latest 5 actual results for BSBSB or SBSBS
+        const patternStr = last5Sizes.map(s => s === "BIG" ? "B" : "S").join("");
+        const isAlternatingPattern = (patternStr === "BSBSB" || patternStr === "SBSBS");
+
+        if (isAlternatingPattern) {
+            // Rule: Prediction = OPPOSITE of latest result
+            predictedVal = getOppositePrediction(prev);
+        } else {
+            // Rule: Normal level rule (L5, L7, and L8 are all OPPOSITE)
+            predictedVal = getOppositePrediction(prev);
+        }
     } else {
+        // L1-L4, L6, L9: Normal level rule (SAME)
         predictedVal = prev;
     }
 
