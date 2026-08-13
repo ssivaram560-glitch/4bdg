@@ -8,7 +8,7 @@ const fs          = require('fs');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAFgHVTbDpWHlq2bscIbkiw6cs08CATeQpQ"
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAF81fxfThFxhnsU7rlfTKZaKW7_M6caa3Y"
 const OWNER_ID     = 1865939951;
 const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
@@ -962,51 +962,21 @@ function decidePrediction(list, currentLevel, userId) {
 
     // C5 logic simplified: don't force skip, continue normal prediction
 
-    // ALT4 detection: enter active mode where we predict opposite of latest
-    // ABAB detection: if recent results alternate (ABAB...), enter ABAB follow mode
-    const alternates = isAlternating(last6Sizes) || isAlternating(last4Sizes);
-    if (alternates) {
-        state.ababActive = true;
-    }
+    // ABAB and ALT4 logic removed per user request (No ABAB rule)
+    state.ababActive = false;
+    state.alt4Active = false;
 
-    
-
-    // ALT4 fallback: if detected, behave similarly (legacy)
-    if (alternating4WaitTrigger && !sameLastPair) {
-        state.alt4Active = true;
-        state.lastDecisionSource = "ALT4_ACTIVE";
-        return {
-            type: "SIZE",
-            val: getOppositePrediction(latestResult),
-            skip: false,
-            conf: 90,
-            pat: "ALT4_ACTIVE",
-            reason: "ALT4_ACTIVE"
-        };
-    }
-
-    if (state.alt4Active) {
-        state.lastDecisionSource = "ALT4_ACTIVE";
-        return {
-            type: "SIZE",
-            val: getOppositePrediction(latestResult),
-            skip: false,
-            conf: 90,
-            pat: "ALT4_ACTIVE",
-            reason: "ALT4_ACTIVE"
-        };
-    }
-
-    // Skip counters removed from decision flow
-
-    // Special-case skip rules removed (violet, repeated number, BBBSSS)
-
-    // Apply 8-level rule mapping: map any level into 1..8
-    const mappedLevel = ((Number(currentLevel) - 1) % 8) + 1;
+    // Apply 9-level rule mapping: map any level into 1..9
+    const mappedLevel = ((Number(currentLevel) - 1) % 9) + 1;
     let predictedVal = normalPrediction;
     const prev = latestResult || normalPrediction;
-    if (mappedLevel === 5) predictedVal = getOppositePrediction(prev);
-    else predictedVal = prev; // L1-L4 and L6-L8: same as previous
+
+    // L1-L4: SAME, L5: OPPOSITE, L6: SAME, L7-L8: OPPOSITE, L9: SAME
+    if (mappedLevel === 5 || mappedLevel === 7 || mappedLevel === 8) {
+        predictedVal = getOppositePrediction(prev);
+    } else {
+        predictedVal = prev;
+    }
 
     state.lastDecisionSource = `L${mappedLevel}`;
     return {
@@ -1091,26 +1061,16 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
         const st = autobetState[userId];
         const cfg = autobetCfg[userId];
 
-        // If ABAB follow was active and a placed bet lost, clear ABAB and reset to L1
-        if (state.ababActive && betPlaced && !wasWin) {
-            state.ababActive = false;
-            st.level = 1;
-        }
-
-            if (betPlaced && wasWin) {
+        // ABAB follow logic removed per user request
+        if (betPlaced && wasWin) {
             st.level = 1;
             st.consecutiveLoss = 0;
             st.levelLossCount = 0;
             st.waitingAction = null;
             st.waitingTarget = 0;
             st.watchConsecutiveLosses = 0;
-                // If this was a level-5 win, treat it as ABAB trend start
-                if (betLevel === 5) {
-                    state.ababActive = true;
-                    console.log(`[ABAB] User ${userId} L5 win -> ABAB active`);
-                }
-                state.lastLossLevel = 0;
-                state.l5RecoveryMode = false;
+            state.lastLossLevel = 0;
+            state.l5RecoveryMode = false;
             return false;
         }
 
@@ -1168,9 +1128,7 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
     }
 
     // If ALT4 active mode was running, clear it on a loss (stop when one loss occurs)
-    if (state.alt4Active && !wasWin) {
-        state.alt4Active = false;
-    }
+    // ALT4 reset logic removed per user request
 
     return false;
 }
@@ -1309,7 +1267,6 @@ async function runPredict(userId, chatId) {
     if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
 
     const waitingDueToLevel = st.waitingAction === 'watch';
-    const alt4Override = state.alt4Active === true;
     // No skip handling — always proceed with normal prediction flow
 
     let abLine = "🤖 AutoBet: OFF";
@@ -1319,16 +1276,12 @@ async function runPredict(userId, chatId) {
     if (!cfg || !cfg.enabled) {
         abLine = "🤖 AutoBet: OFF";
         canBet = false;
-    } else if (waitingDueToLevel && !alt4Override) {
+    } else if (waitingDueToLevel) {
         canBet = false;
         if (st.waitingAction === 'watch') {
             waitLine = `\nWatch: ${st.watchConsecutiveLosses}/${st.waitingTarget} losses`;
             abLine = `👀 WATCH MODE (${st.level})`;
         }
-    } else if (waitingDueToLevel && alt4Override) {
-        // ALT4 active: override watch/skip and allow betting until a loss clears ALT4
-        canBet = true;
-        abLine = `🔁 ALT4 ACTIVE — L${st.level} (override)`;
     } else if (cfg.watch && st.consecutiveLoss < cfg.watchLoss) {
         abLine = `👀 WATCHING: ${st.consecutiveLoss}/${cfg.watchLoss}`;
         waitLine = `\nWatch Loss: ${st.consecutiveLoss}/${cfg.watchLoss}`;
