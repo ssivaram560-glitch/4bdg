@@ -8,8 +8,9 @@ const fs          = require('fs');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAFgHVTbDpWHlq2bscIbkiw6cs08CATeQpQ"
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAF81fxfThFxhnsU7rlfTKZaKW7_M6caa3Y"
 const OWNER_ID     = 1865939951;
+const OWNER_IDS    = [OWNER_ID, 8321379592];
 const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
 
@@ -357,14 +358,18 @@ async function recordDangerPair(pairKey, chatId = null) {
     return;
 }
 
+function isOwnerId(id) {
+    return OWNER_IDS.some(ownerId => Number(ownerId) === Number(id));
+}
+
 function hasAccess(id) {
-    if (Number(id) === Number(OWNER_ID)) return true;
+    if (isOwnerId(id)) return true;
     if (running[id] === true) return true;
     const expiry = usersAccess[id];
     return !!(expiry && Date.now() < expiry);
 }
 function daysLeft(id) {
-    if (Number(id) === Number(OWNER_ID)) return "∞";
+    if (isOwnerId(id)) return "∞";
     if (running[id] === true) return "RUN";
     const expiry = usersAccess[id];
     if (!expiry) return "0";
@@ -893,6 +898,22 @@ function getOppositePrediction(value) {
     return value === "BIG" ? "SMALL" : "BIG";
 }
 
+function getLatestResultNumberPrediction(list) {
+    if (!list || !list.length) return "SMALL";
+    const latestItem = list[0];
+    const latestNumber = Number.parseInt(latestItem && (latestItem.number || latestItem.winNumber || latestItem) || 0, 10);
+    if ([1, 4, 6, 8].includes(latestNumber)) return "BIG";
+    return "SMALL";
+}
+
+function getPreviousResultCategory(list) {
+    if (!list || !list.length) return "SMALL";
+    const previousItem = list[1] || list[0];
+    const previousNumber = Number.parseInt(previousItem && (previousItem.number || previousItem.winNumber || previousItem) || 0, 10);
+    if ([1, 4, 6, 8].includes(previousNumber)) return "BIG";
+    return "SMALL";
+}
+
 function isAlternating4Pattern(sizes) {
     if (!sizes || sizes.length < 4) return false;
     const last4 = sizes.slice(-4).map(v => v === 'BIG' ? 'B' : 'S').join('');
@@ -1016,34 +1037,28 @@ function decidePrediction(list, currentLevel, userId) {
     state.ababActive = false;
     state.alt4Active = false;
 
-    // Apply 9-level rule mapping: map any level into 1..9
-    const mappedLevel = ((Number(currentLevel) - 1) % 9) + 1;
+    const actualLevel = Number(currentLevel) || 1;
     let predictedVal = normalPrediction;
-    const prev = latestResult || normalPrediction;
+    const prev = getPreviousResultCategory(list);
 
-    // L5, L6, L7 — Same/Opposite Dynamic Rule
-    if (mappedLevel === 5 || mappedLevel === 6 || mappedLevel === 7) {
-        const isSame = last2Sizes.length === 2 && last2Sizes[0] === last2Sizes[1];
-        if (isSame) {
-            predictedVal = prev; // Same Pattern
-        } else {
-            predictedVal = getOppositePrediction(prev); // Opposite Pattern
-        }
-    } else if (mappedLevel === 8) {
-        // Level 8 remains Opposite
-        predictedVal = getOppositePrediction(prev);
+    // Exact level rules:
+    // L1-L4: same as previous result BIG/SMALL
+    // L5-L11: latest result number mapping => 1,4,6,8 BIG; 0,2,3,5,7,9 SMALL
+    if (actualLevel >= 1 && actualLevel <= 4) {
+        predictedVal = prev;
+    } else if (actualLevel >= 5 && actualLevel <= 11) {
+        predictedVal = getLatestResultNumberPrediction(list);
     } else {
-        // L1-L4, L9: Normal level rule (SAME)
         predictedVal = prev;
     }
 
-    state.lastDecisionSource = `L${mappedLevel}`;
+    state.lastDecisionSource = `L${actualLevel}`;
     return {
         type: "SIZE",
         val: predictedVal,
         conf: 85,
-        pat: `L${mappedLevel}`,
-        reason: `LEVEL_${mappedLevel}`
+        pat: `L${actualLevel}`,
+        reason: `LEVEL_${actualLevel}`
     };
 }
 
@@ -1706,7 +1721,7 @@ function addHandlers(){
     });
 
     bot.onText(/\/owner/,(msg)=>{
-        if(msg.from.id!==OWNER_ID)return;
+        if(!isOwnerId(msg.from.id)) return;
         if(ownerLoggedIn)return send(OWNER_ID,"Already in!",{reply_markup:ownerMenu});
         ownerState={action:"login"};send(OWNER_ID,"� Owner password:");
     });
@@ -1726,7 +1741,7 @@ function addHandlers(){
         const OB=["👥 All Users","👮 All Admins","👤 Add Admin","🗑 Remove Admin","🔑 Generate Key","📋 All Keys","🟢 Add User","🔴 Remove User","🔐 Set Token","📊 All Status","🚪 Owner Logout"];
         const AB=["👥 Active Users","🔑 Generate Key","🟢 Add User","🔴 Remove User","📋 All Keys","🚪 Admin Logout"];
 
-        if(id===OWNER_ID&&ownerState){
+        if(isOwnerId(id)&&ownerState){
             const s=ownerState;
             if(s.action==="login"){if(text===OWNER_PASS){ownerLoggedIn=true;ownerState=null;return send(OWNER_ID,"👑 Welcome!",{reply_markup:ownerMenu});}else return send(OWNER_ID,"❌ Wrong!");}
             if(OB.includes(text)){ownerState=null;}
@@ -1734,11 +1749,11 @@ function addHandlers(){
             else if(s.action==="removeadmin"){const t=parseInt(text);if(isNaN(t))return;delete adminPasswords[t];delete adminLoggedIn[t];ownerState=null;send(OWNER_ID,"🚫 Removed",{reply_markup:ownerMenu});return;}
             else if(s.action==="genkey"){const d=parseInt(text);if(isNaN(d)||d<1)return send(OWNER_ID,"❌ Days?");const k=generateKey(d,OWNER_ID);ownerState=null;return send(OWNER_ID,"🔑 Key:\n\n"+k+"\n\n"+d+"d\n/key "+k,{reply_markup:ownerMenu});}
             else if(s.action==="adduser"){if(!s.step2){const t=parseInt(text);if(isNaN(t))return send(OWNER_ID,"❌");ownerState={action:"adduser",step2:true,tid:t};return send(OWNER_ID,"ID:"+t+"\nDays?");}else{const d=parseInt(text);if(isNaN(d)||d<1)return send(OWNER_ID,"❌");usersAccess[s.tid]=Date.now()+d*86400000;ownerState=null;send(OWNER_ID,"✅ "+s.tid+" "+d+"d",{reply_markup:ownerMenu});send(s.tid,"🎊 VIP! "+d+" days\n▶️ Start Prediction!");return;}}
-            else if(s.action==="removeuser"){const t=parseInt(text);if(isNaN(t))return;if(Number(t)===Number(OWNER_ID))return send(OWNER_ID,"❌ Owner access cannot be removed.",{reply_markup:ownerMenu});const was=hasAccess(t);delete usersAccess[t];running[t]=false;ownerState=null;send(OWNER_ID,was?"🚫 Removed":"⚠️ Not active",{reply_markup:ownerMenu});if(was)send(t,"🔴 Access removed.");return;}
+            else if(s.action==="removeuser"){const t=parseInt(text);if(isNaN(t))return;if(isOwnerId(t))return send(OWNER_ID,"❌ Owner access cannot be removed.",{reply_markup:ownerMenu});const was=hasAccess(t);delete usersAccess[t];running[t]=false;ownerState=null;send(OWNER_ID,was?"🚫 Removed":"⚠️ Not active",{reply_markup:ownerMenu});if(was)send(t,"🔴 Access removed.");return;}
             else if(s.action==="settoken"){GLOBAL_TOKEN=text.trim().replace(/^Bearer\s+/i,"");ownerState=null;return send(OWNER_ID,"✅ Global Token set!",{reply_markup:ownerMenu});}
         }
 
-        if(id===OWNER_ID&&ownerLoggedIn){
+        if(isOwnerId(id)&&ownerLoggedIn){
             if(text==="👥 All Users")    return send(OWNER_ID,"👥\n\n"+activeUsersList());
             if(text==="👮 All Admins")   return send(OWNER_ID,"👮\n\n"+adminList());
             if(text==="👤 Add Admin")    {ownerState={action:"addadmin"};return send(OWNER_ID,"User ID:");}
