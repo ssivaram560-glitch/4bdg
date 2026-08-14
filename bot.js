@@ -852,10 +852,9 @@ function initState(userId) {
             lastDecisionSource: null,
             lastLossLevel: 0,
             l5RecoveryMode: false,
-            alterPatternMode: false
+            waitingForDouble: false
         };
     } else {
-        if (userStates[userId].alterPatternMode === undefined) userStates[userId].alterPatternMode = false;
         if (!userStates[userId].historyModes) userStates[userId].historyModes = [];
         if (!userStates[userId].forcedModeQueue) userStates[userId].forcedModeQueue = [];
         if (userStates[userId].periodCounter === undefined) userStates[userId].periodCounter = 0;
@@ -875,6 +874,7 @@ function initState(userId) {
         if (userStates[userId].lastDecisionSource === undefined) userStates[userId].lastDecisionSource = null;
         if (userStates[userId].lastLossLevel === undefined) userStates[userId].lastLossLevel = 0;
         if (userStates[userId].l5RecoveryMode === undefined) userStates[userId].l5RecoveryMode = false;
+        if (userStates[userId].waitingForDouble === undefined) userStates[userId].waitingForDouble = false;
     }
 }
 
@@ -958,6 +958,15 @@ function decidePrediction(list, currentLevel, userId) {
     initState(userId);
     const state = userStates[userId];
 
+    if (state.waitingForDouble) {
+        return {
+            type: "SKIP",
+            val: "SKIP",
+            pat: "WAIT_DOUBLE",
+            reason: "WAITING_FOR_BB_SS"
+        };
+    }
+
     // Evaluate skip and danger logic in priority order before normal prediction:
     // 1. persistent danger pair skip (last-two numeric results with count>=3)
     // 2. danger patterns from patternStats
@@ -1009,58 +1018,33 @@ function decidePrediction(list, currentLevel, userId) {
 
     // Apply 9-level rule mapping: map any level into 1..9
     const mappedLevel = ((Number(currentLevel) - 1) % 9) + 1;
-    let predictedVal;
+    let predictedVal = normalPrediction;
     const prev = latestResult || normalPrediction;
 
-    // Default Level Rules (Normal Way)
-    // L5, L6: OPPOSITE, L7, L8: SAME, Others: SAME
-    if (mappedLevel === 5 || mappedLevel === 6) {
-        predictedVal = getOppositePrediction(prev);
+    // L5, L7, L8 — Exact Rule Implementation
+    if (mappedLevel === 5 || mappedLevel === 7 || mappedLevel === 8) {
+        // Step 1: Check latest 5 actual results for BSBSB or SBSBS
+        const patternStr = last5Sizes.map(s => s === "BIG" ? "B" : "S").join("");
+        const isAlternatingPattern = (patternStr === "BSBSB" || patternStr === "SBSBS");
+
+        if (isAlternatingPattern) {
+            // Rule: Prediction = OPPOSITE of latest result
+            predictedVal = getOppositePrediction(prev);
+        } else {
+            // Rule: Normal level rule (L5, L7, and L8 are all OPPOSITE)
+            predictedVal = getOppositePrediction(prev);
+        }
     } else {
-        // L1-L4, L7, L8, L9: SAME
+        // L1-L4, L6, L9: Normal level rule (SAME)
         predictedVal = prev;
     }
 
-    // 1) Read last 7 results and check for trends (SSSS or BBBB)
-    const last7Sizes = sizes.slice(-7);
-    const last7Str = last7Sizes.map(s => s === "BIG" ? "B" : "S").join("");
-    const hasTrend = last7Str.includes("SSSS") || last7Str.includes("BBBB");
-
-    state.lastDecisionSource = null;
-
-    if (!hasTrend && last7Sizes.length >= 3) {
-        // ELSE: Check for BSB/SBS and handle Alternation Mode
-        if (state.alterPatternMode) {
-            if (state.lastPredictionWasLoss) {
-                state.alterPatternMode = false;
-                // Reverts to Level Rule predictedVal already set above
-            } else {
-                // Continue alternating until a loss occurs
-                predictedVal = getOppositePrediction(prev);
-                state.lastDecisionSource = "ALTER_CONT";
-            }
-        }
-
-        // If not in mode (or just reset), check for trigger
-        if (!state.alterPatternMode) {
-            const last3Str = last7Str.slice(-3);
-            if (last3Str === "BSB" || last3Str === "SBS") {
-                predictedVal = getOppositePrediction(prev);
-                state.alterPatternMode = true;
-                state.lastDecisionSource = "ALTER_START";
-            }
-        }
-    }
-
-    if (!state.lastDecisionSource) {
-        state.lastDecisionSource = `L${mappedLevel}`;
-    }
-
+    state.lastDecisionSource = `L${mappedLevel}`;
     return {
         type: "SIZE",
         val: predictedVal,
         conf: 85,
-        pat: state.lastDecisionSource,
+        pat: `L${mappedLevel}`,
         reason: `LEVEL_${mappedLevel}`
     };
 }
@@ -1077,6 +1061,15 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
         const sizeVal = actual === 'BIG' || actual === 'SMALL' ? actual : (actual >= 5 ? 'BIG' : 'SMALL');
         state.resultSizeHistory.push(sizeVal);
         if (state.resultSizeHistory.length > 18) state.resultSizeHistory.shift();
+        
+        // Clear waitingForDouble if BB or SS appears
+        if (state.waitingForDouble) {
+            const last2 = state.resultSizeHistory.slice(-2).map(s => s === 'BIG' ? 'B' : 'S').join('');
+            if (last2 === 'BB' || last2 === 'SS') {
+                state.waitingForDouble = false;
+            }
+        }
+        
         updatePatternMemory(userId, state.resultSizeHistory, wasWin);
     }
 
@@ -1114,6 +1107,13 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
     
     if (wasWin) {
         state.consecutivePatternLoss = 0;
+        
+        // Detect win on alternating pattern (BSBSB or SBSBS)
+        const last5 = state.resultSizeHistory.slice(-5).map(s => s === 'BIG' ? 'B' : 'S').join('');
+        if (last5 === 'BSBSB' || last5 === 'SBSBS') {
+            state.waitingForDouble = true;
+        }
+
         if (currentActiveMode === "N") {
             state.normalWinsIn20++;
         } else {
@@ -1348,13 +1348,17 @@ async function runPredict(userId, chatId) {
     if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
 
     const waitingDueToLevel = st.waitingAction === 'watch';
-    // No skip handling — always proceed with normal prediction flow
+    const isWaitDouble = signal.type === "SKIP" && signal.pat === "WAIT_DOUBLE";
 
     let abLine = "🤖 AutoBet: OFF";
     let canBet = false;
     let waitLine = "";
 
-    if (!cfg || !cfg.enabled) {
+    if (isWaitDouble) {
+        abLine = "⏳ WAITING FOR BB/SS";
+        waitLine = "\nSkip: Alternating Win";
+        canBet = false;
+    } else if (!cfg || !cfg.enabled) {
         abLine = "🤖 AutoBet: OFF";
         canBet = false;
     } else if (waitingDueToLevel) {
