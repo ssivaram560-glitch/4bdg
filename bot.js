@@ -8,7 +8,7 @@ const fs          = require('fs');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAElSZCj9HqI8eSm__C_f8g0loGp-wcaqm4"
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAHQgFT32JdvP2ELvgBvgl-xof35DeGOxxI"
 const OWNER_ID     = 1865939951;
 const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
@@ -864,10 +864,9 @@ function decidePrediction(list, currentLevel, userId) {
         return null;
     }
 
-    // Extract latest 3 results
-    const r1Num = getResultNum(list[0]);  // latest
-    const r2Num = getResultNum(list[1]);  // previous
-    const r3Num = getResultNum(list[2]);  // before previous
+    const r1Num = getResultNum(list[0]);
+    const r2Num = getResultNum(list[1]);
+    const r3Num = getResultNum(list[2]);
 
     if (r1Num === null || r2Num === null || r3Num === null) {
         return null;
@@ -876,6 +875,15 @@ function decidePrediction(list, currentLevel, userId) {
     const r1Size = getSize(r1Num);
     const r2Size = getSize(r2Num);
     const r3Size = getSize(r3Num);
+
+    if (Number(currentLevel) <= 3) {
+        return {
+            type: "SIZE",
+            val: r1Size,
+            reason: "L1_L3_SAME_AS_LATEST",
+            conf: 100
+        };
+    }
 
     let prediction = null;
 
@@ -902,8 +910,6 @@ function decidePrediction(list, currentLevel, userId) {
     }
 
     // STEP 2: Special 2-Result Rules (R2 + R1)
-    
-    // Rule A: 0 + 0 → SMALL
     if (r2Num === 0 && r1Num === 0) {
         prediction = "SMALL";
         return {
@@ -914,7 +920,6 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    // Rule B: 5 + 5 → BIG
     if (r2Num === 5 && r1Num === 5) {
         prediction = "BIG";
         return {
@@ -925,7 +930,6 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    // Rule C: 0 + BIG → SMALL
     if (r2Num === 0 && r1Size === "BIG") {
         prediction = "SMALL";
         return {
@@ -936,7 +940,6 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    // Rule D: 0 + SMALL → BIG
     if (r2Num === 0 && r1Size === "SMALL") {
         prediction = "BIG";
         return {
@@ -947,7 +950,6 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    // Rule E: 5 + BIG → SMALL
     if (r2Num === 5 && r1Size === "BIG") {
         prediction = "SMALL";
         return {
@@ -958,7 +960,6 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    // Rule F: 5 + SMALL → BIG
     if (r2Num === 5 && r1Size === "SMALL") {
         prediction = "BIG";
         return {
@@ -969,7 +970,6 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    // Rule G: BIG + 0 → BIG
     if (r2Size === "BIG" && r1Num === 0) {
         prediction = "BIG";
         return {
@@ -980,7 +980,6 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    // Rule H: SMALL + 5 → SMALL
     if (r2Size === "SMALL" && r1Num === 5) {
         prediction = "SMALL";
         return {
@@ -991,7 +990,6 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    // Rule I: SMALL + 6 → SMALL
     if (r2Size === "SMALL" && r1Num === 6) {
         prediction = "SMALL";
         return {
@@ -1002,7 +1000,6 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    // Rule J: SMALL + 8 → BIG
     if (r2Size === "SMALL" && r1Num === 8) {
         prediction = "BIG";
         return {
@@ -1013,12 +1010,11 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    // STEP 7: Default - Same as latest (R1)
     prediction = r1Size;
     return {
         type: "SIZE",
         val: prediction,
-        reason: "DEFAULT_SAME_AS_R1",
+        reason: "SYSTEM_DEFAULT_SAME_AS_R1",
         conf: 50
     };
 }
