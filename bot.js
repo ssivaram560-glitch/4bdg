@@ -8,7 +8,7 @@ const fs          = require('fs');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAFgHVTbDpWHlq2bscIbkiw6cs08CATeQpQ"
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAElSZCj9HqI8eSm__C_f8g0loGp-wcaqm4"
 const OWNER_ID     = 1865939951;
 const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
@@ -287,7 +287,6 @@ async function getLiveBalance(userId, chatId = null) {
 
 function initUser(id) {
     if (!stats[id])        stats[id]        = { total:0,win:0,loss:0,lossStreak:0,winStreak:0,maxWinStreak:0,maxLossStreak:0 };
-    if (!userStates[id])   userStates[id]   = { resultHistory:[], currentMode:null, lastPrediction:null };
     if (!sentPeriods[id])  sentPeriods[id]  = new Set();
     if (!autobetCfg[id])   autobetCfg[id]   = { 
         watch:false, 
@@ -296,8 +295,8 @@ function initUser(id) {
         maxLvl:15, 
         enabled:false, 
         customBets:[1,3,9,27,81,243,729,2187,6561,19683,59049,177147,531441,1594323,4782969],
-        targetProfit: 1000,    // NEW: Profit target set panna
-        restartDelay: 1        // NEW: Restart time (hours) set panna
+        targetProfit: 1000,
+        restartDelay: 1
     };
     if (!autobetState[id]) autobetState[id] = { 
         level:1, 
@@ -307,8 +306,8 @@ function initUser(id) {
         waitingTarget: 0,
         watchConsecutiveLosses: 0,
         inMart:false,
-        isWaiting: false,      // NEW: Bot waiting-la irukka-nu check panna
-        nextStartTime: null    // NEW: Thirumba eppo start aakanum-nu store panna
+        isWaiting: false,
+        nextStartTime: null
     };
     if (!profitTrack[id])  profitTrack[id]  = { totalBets:0, wins:0, losses:0, pnl:0, winStreak:0, lossStreak:0, maxW:0, maxL:0, totalBetAmount: 0 };
 }
@@ -807,496 +806,228 @@ async function placeBet(userId, chatId, period, prediction, predType, level) {
     return false;
 }
 // ============================================================
-// ============================================================
-// COMPLETE BOT LOGIC WITH 4-PREDICTION PATTERN MODE EXTENSION & FIXES
-// ============================================================
-// ============================================================
-// COMPLETE BOT LOGIC WITH STRICT 4-CONSECUTIVE LOSS REQUIREMENT (NO WINS ALLOWED)
-// ============================================================
-let userStates = {};
-
-function buildBSFromList(list, count = 15) {
-    if (!list || !Array.isArray(list)) return [];
-    const sliced = list.slice(0, count);
-    const resultHistory = [];
-
-    for (let i = sliced.length - 1; i >= 0; i--) {
-        const item = sliced[i];
-        const num = parseInt(item.number || item.winNumber || 0);
-        const size = num >= 5 ? "BIG" : "SMALL";
-        resultHistory.push(size);
-    }
-    return resultHistory;
-}
-
-function initState(userId) {
-    if (!userStates[userId]) {
-        userStates[userId] = {
-            mode: "NORMAL",
-            pendingPrediction: true,
-            forcedModeQueue: [],
-            historyModes: [],
-            periodCounter: 0,
-            normalWinsIn20: 0,
-            recoveryWinsIn20: 0,
-            lastPredictionWasLoss: false,
-            consecutivePatternLoss: 0,
-            predictionOutcomes: [],
-            resultSizeHistory: [],
-            // patternStats and dangerPatterns storage disabled
-            c4Active: false,
-            c5Triggered: false,
-                awaitingSamePair: false,
-                alt4Active: false,
-                ababActive: false,
-            lastDecisionSource: null,
-            lastLossLevel: 0,
-            l5RecoveryMode: false,
-            waitingForDouble: false
-        };
-    } else {
-        if (!userStates[userId].historyModes) userStates[userId].historyModes = [];
-        if (!userStates[userId].forcedModeQueue) userStates[userId].forcedModeQueue = [];
-        if (userStates[userId].periodCounter === undefined) userStates[userId].periodCounter = 0;
-        if (userStates[userId].normalWinsIn20 === undefined) userStates[userId].normalWinsIn20 = 0;
-        if (userStates[userId].recoveryWinsIn20 === undefined) userStates[userId].recoveryWinsIn20 = 0;
-        if (userStates[userId].lastPredictionWasLoss === undefined) userStates[userId].lastPredictionWasLoss = false;
-        if (userStates[userId].consecutivePatternLoss === undefined) userStates[userId].consecutivePatternLoss = 0;
-        if (userStates[userId].predictionOutcomes === undefined) userStates[userId].predictionOutcomes = [];
-        if (userStates[userId].resultSizeHistory === undefined) userStates[userId].resultSizeHistory = [];
-        // patternStats/dangerPatterns intentionally not initialized — storage disabled
-        // skip counters removed
-        if (userStates[userId].c4Active === undefined) userStates[userId].c4Active = false;
-        if (userStates[userId].c5Triggered === undefined) userStates[userId].c5Triggered = false;
-        if (userStates[userId].awaitingSamePair === undefined) userStates[userId].awaitingSamePair = false;
-        if (userStates[userId].alt4Active === undefined) userStates[userId].alt4Active = false;
-        if (userStates[userId].ababActive === undefined) userStates[userId].ababActive = false;
-        if (userStates[userId].lastDecisionSource === undefined) userStates[userId].lastDecisionSource = null;
-        if (userStates[userId].lastLossLevel === undefined) userStates[userId].lastLossLevel = 0;
-        if (userStates[userId].l5RecoveryMode === undefined) userStates[userId].l5RecoveryMode = false;
-        if (userStates[userId].waitingForDouble === undefined) userStates[userId].waitingForDouble = false;
-    }
-}
-
-function getLevelRequirement(level) {
-    const safeLevel = Math.max(1, Math.min(LEVEL_REQUIREMENTS.length, Number(level) || 1));
-    return LEVEL_REQUIREMENTS[safeLevel - 1] || 1;
-}
-
-function getNormalPrediction(sizes) {
-    if (!sizes || !sizes.length) return "SMALL";
-    const bigCount = sizes.filter(size => size === "BIG").length;
-    return bigCount >= 3 ? "BIG" : "SMALL";
-}
-
-function getOppositePrediction(value) {
-    return value === "BIG" ? "SMALL" : "BIG";
-}
-
-function isAlternating4Pattern(sizes) {
-    if (!sizes || sizes.length < 4) return false;
-    const last4 = sizes.slice(-4).map(v => v === 'BIG' ? 'B' : 'S').join('');
-    return last4 === 'BSBS' || last4 === 'SBSB';
-}
-
-function isAlternating(sizes, minLen = 4) {
-    if (!sizes || sizes.length < minLen) return false;
-    // Ensure the sequence alternates for the provided slice
-    for (let i = 1; i < sizes.length; i++) {
-        if (sizes[i] === sizes[i - 1]) return false;
-    }
-    return true;
-}
-
-function hasTripleInLastFive(numbers) {
-    if (!numbers || numbers.length < 3) return null;
-    const last5 = numbers.slice(-5);
-    const counts = {};
-    for (const num of last5) {
-        if (typeof num !== 'number' || Number.isNaN(num)) continue;
-        counts[num] = (counts[num] || 0) + 1;
-        if (counts[num] >= 3) return num;
-    }
-    return null;
-}
-
-function buildPatternKeys(sizes) {
-    const seq = (sizes || []).slice(-12).map(v => (v === 'BIG' || v === 'B' || v === 1 ? 'B' : 'S'));
-    const keys = [];
-    for (let len = 4; len <= Math.min(6, seq.length); len++) {
-        keys.push(seq.slice(-len).join(''));
-    }
-    return keys;
-}
-
-function getPatternPrediction(patternKey) {
-    if (!patternKey) return 'SMALL';
-    const bigCount = patternKey.split('').filter(v => v === 'B').length;
-    return bigCount >= Math.ceil(patternKey.length / 2) ? 'BIG' : 'SMALL';
-}
-
-function findDangerPattern(state, patternKeys) {
-    // Deprecated: pattern danger lookup disabled.
-    return null;
-}
-
-function findBestWinPattern(state, patternKeys) {
-    // Deprecated: pattern memory disabled.
-    return null;
-}
-
-function updatePatternMemory(userId, sizeHistory, wasWin) {
-    // Deprecated: no-op to remove pattern memory.
-    return;
-}
-
-// ============================================================
-// L1–L11 PREDICTION LOGIC
-// ============================================================
-//
-// L1–L4:
-//   SAME as previous result
-//   Previous 0–4 = SMALL
-//   Previous 5–9 = BIG
-//
-// L5–L11:
-//   READ latest result number
-//   1,4,6,8       = BIG
-//   0,2,3,5,7,9   = SMALL
-//
-// WIN at ANY level → RESET TO L1
-// LOSS → NEXT LEVEL
+// PREDICTION LOGIC - MIRROR & SPECIAL RULES
 // ============================================================
 
-function getLatestResultSize(latestNumber) {
-    const n = Number(latestNumber);
+// Helper: Convert number to size
+function getSize(num) {
+    const n = Number(num);
     return n >= 5 ? "BIG" : "SMALL";
 }
 
-function getL5L11Size(latestNumber) {
-    const n = Number(latestNumber);
-    return [1, 4, 6, 8].includes(n) ? "BIG" : "SMALL";
+// Helper: Get opposite size
+function opposite(size) {
+    return size === "BIG" ? "SMALL" : "BIG";
 }
 
-function getResultNumber(item) {
-    if (item === null || item === undefined) {
-        return null;
-    }
-
-    if (typeof item === "number") {
-        return item;
-    }
-
-    if (typeof item === "string") {
-        const n = parseInt(item, 10);
-        return Number.isNaN(n) ? null : n;
-    }
-
-    const value =
-        item.number ??
-        item.resultNumber ??
-        item.result ??
-        item.winNumber;
-
-    const n = parseInt(value, 10);
-    return Number.isNaN(n) ? null : n;
+// Helper: Extract result number from item
+function getResultNum(item) {
+    if (!item) return null;
+    const num = item.number !== undefined ? item.number : item.winNumber;
+    return num !== undefined ? Number(num) : null;
 }
 
-function predictL1L11(latestNumber, level) {
-    const safeLevel = Number(level);
-    const safeNumber = Number(latestNumber);
-
-    if (safeLevel < 1 || safeLevel > 11) {
-        return null;
+// Helper: Check for ABAB pattern in last 5 results
+function checkABABPattern(list) {
+    if (!list || list.length < 5) return false;
+    
+    // Get latest 5 results
+    const last5 = [];
+    for (let i = 0; i < 5; i++) {
+        const num = getResultNum(list[i]);
+        if (num === null) return false;
+        last5.push(getSize(num));
     }
-
-    if (safeLevel >= 1 && safeLevel <= 4) {
-        return getLatestResultSize(safeNumber);
-    }
-
-    if (safeLevel >= 5 && safeLevel <= 11) {
-        return getL5L11Size(safeNumber);
-    }
-
-    return null;
+    
+    // Reverse to get chronological order (oldest to newest)
+    last5.reverse();
+    
+    // Check for BSBSB or SBSBS pattern
+    const pattern = last5.join("");
+    return pattern === "BSBSB" || pattern === "SBSBS";
 }
 
+/**
+ * NEW PREDICTION LOGIC WITH ABAB PATTERN
+ * Priority:
+ * 1. Mirror pattern (R3 == R1) - highest priority
+ * 2. ABAB pattern (last 5 results alternating: BSBSB or SBSBS)
+ * 3. Special 2-result rules (0+0, 5+5, 0+BIG, 0+SMALL, 5+BIG, 5+SMALL)
+ * 4. BIG + 0 → BIG
+ * 5. SMALL + 5 → SMALL
+ * 6. SMALL + 6 → SMALL
+ * 7. SMALL + 8 → BIG
+ * 8. Default: Same as latest (R1)
+ */
 function decidePrediction(list, currentLevel, userId) {
-    if (!list || list.length < 2) {
+    if (!list || list.length < 3) {
         return null;
     }
 
-    initState(userId);
-    const state = userStates[userId];
+    // Extract latest 3 results
+    const r1Num = getResultNum(list[0]);  // latest
+    const r2Num = getResultNum(list[1]);  // previous
+    const r3Num = getResultNum(list[2]);  // before previous
 
-    const latestNumber = getResultNumber(list[0]);
-    const levelPrediction = predictL1L11(latestNumber, currentLevel);
-    if (levelPrediction !== null && levelPrediction !== undefined) {
-        state.lastDecisionSource = `L${currentLevel}`;
+    if (r1Num === null || r2Num === null || r3Num === null) {
+        return null;
+    }
+
+    const r1Size = getSize(r1Num);
+    const r2Size = getSize(r2Num);
+    const r3Size = getSize(r3Num);
+
+    let prediction = null;
+
+    // STEP 1: Mirror Pattern (R3 == R1) - HIGHEST PRIORITY
+    if (r3Num === r1Num) {
+        prediction = opposite(r1Size);
         return {
             type: "SIZE",
-            val: levelPrediction,
-            conf: 95,
-            pat: `L${currentLevel}`,
-            reason: "LATEST_RESULT_ONLY"
+            val: prediction,
+            reason: `MIRROR(${r3Num}==${r1Num})`,
+            conf: 95
         };
     }
 
-    if (state.waitingForDouble) {
+    // STEP 1.5: ABAB Pattern (Last 5 Results Alternating) - HIGH PRIORITY
+    if (checkABABPattern(list)) {
+        prediction = opposite(r1Size);
         return {
-            type: "SKIP",
-            val: "SKIP",
-            pat: "WAIT_DOUBLE",
-            reason: "WAITING_FOR_BB_SS"
+            type: "SIZE",
+            val: prediction,
+            reason: "ABAB_PATTERN",
+            conf: 90
         };
     }
 
-    // Evaluate skip and danger logic in priority order before normal prediction:
-    // 1. persistent danger pair skip (last-two numeric results with count>=3)
-    // 2. danger patterns from patternStats
-    // 3. L5 recovery high win pattern prediction
-    // 4. C5 loss streak strategy
-    // 5. alternating ABAB/BABA wait logic
-    // 6. C4 pattern reversal logic
-    // 7. pending ALT4_WAIT state (waiting for same last pair)
-    // 8. any active skipRemaining countdown
-    // 9. C1 violet/repeated number skip
-    // 10. C2 triple same number in last 5 skip
-    // 11. C3 BBBSSS/SSSBBB skip wait
-    // 12. finally, NORMAL prediction
-    const recentItems = list.slice(0, 10).reverse();
-    const numbers = recentItems.map(item => parseInt(item.number || item.winNumber || 0));
-    const sizes = numbers.map(num => num >= 5 ? "BIG" : "SMALL");
-    // prepare commonly used slices and a normal prediction even when we later skip
-    const last5Sizes = sizes.slice(-5);
-    const last6Sizes = sizes.slice(-6);
-    const last4Sizes = sizes.slice(-4);
-    const last2Sizes = sizes.slice(-2);
-    const latestResult = last5Sizes[last5Sizes.length - 1] || "SMALL";
-    const normalPrediction = getNormalPrediction(last5Sizes);
-
-    // Persistent danger/pair/triple logic removed. Proceed to normal checks only.
-    const violetCount = numbers.slice(-5).filter(num => num === 0 || num === 5).length;
-    const repeatedNumber = hasTripleInLastFive(numbers);
-    const c3Trigger = last6Sizes.length >= 6 && (last6Sizes.join("") === "BBBSSS" || last6Sizes.join("") === "SSSBBB");
-    const c4Trigger = last4Sizes.length >= 4 && (last4Sizes.join("") === "BSBS" || last4Sizes.join("") === "SBSB");
-    const alternating4WaitTrigger = isAlternating4Pattern(last4Sizes); // ABAB or BABA pattern
-    const sameLastPair = last2Sizes.length === 2 && last2Sizes[0] === last2Sizes[1];
-    const recentOutcomes = (state.predictionOutcomes || []).slice(-5);
-    const c5Trigger = recentOutcomes.length === 5 && recentOutcomes.every(outcome => outcome === "LOSS");
-    const patternKeys = buildPatternKeys(sizes);
-    const highWinPattern = null; // pattern memory disabled
-
-    // NOTE: dangerousPattern checks removed. Only persistent
-    // last-two-number pairs (persistentData.dangerPairs) are treated
-    // as danger. Pattern-derived danger (state.dangerPatterns) is
-    // intentionally ignored per updated rule.
-
-    // L5 recovery pattern logic disabled (pattern memory removed)
-
-    // C5 logic simplified: don't force skip, continue normal prediction
-
-    // ABAB and ALT4 logic removed per user request (No ABAB rule)
-    state.ababActive = false;
-    state.alt4Active = false;
-
-    // Apply 9-level rule mapping: map any level into 1..9
-    const mappedLevel = ((Number(currentLevel) - 1) % 9) + 1;
-    let predictedVal = normalPrediction;
-    const prev = latestResult || normalPrediction;
-
-    // L5, L6, L7 — Same/Opposite Dynamic Rule
-    if (mappedLevel === 5 || mappedLevel === 6 || mappedLevel === 7) {
-        const isSame = last2Sizes.length === 2 && last2Sizes[0] === last2Sizes[1];
-        if (isSame) {
-            predictedVal = prev; // Same Pattern
-        } else {
-            predictedVal = getOppositePrediction(prev); // Opposite Pattern
-        }
-    } else if (mappedLevel === 8) {
-        // Level 8 remains Opposite
-        predictedVal = getOppositePrediction(prev);
-    } else {
-        // L1-L4, L9: Normal level rule (SAME)
-        predictedVal = prev;
+    // STEP 2: Special 2-Result Rules (R2 + R1)
+    
+    // Rule A: 0 + 0 → SMALL
+    if (r2Num === 0 && r1Num === 0) {
+        prediction = "SMALL";
+        return {
+            type: "SIZE",
+            val: prediction,
+            reason: "RULE_0+0",
+            conf: 95
+        };
     }
 
-    state.lastDecisionSource = `L${mappedLevel}`;
+    // Rule B: 5 + 5 → BIG
+    if (r2Num === 5 && r1Num === 5) {
+        prediction = "BIG";
+        return {
+            type: "SIZE",
+            val: prediction,
+            reason: "RULE_5+5",
+            conf: 95
+        };
+    }
+
+    // Rule C: 0 + BIG → SMALL
+    if (r2Num === 0 && r1Size === "BIG") {
+        prediction = "SMALL";
+        return {
+            type: "SIZE",
+            val: prediction,
+            reason: "RULE_0+BIG",
+            conf: 90
+        };
+    }
+
+    // Rule D: 0 + SMALL → BIG
+    if (r2Num === 0 && r1Size === "SMALL") {
+        prediction = "BIG";
+        return {
+            type: "SIZE",
+            val: prediction,
+            reason: "RULE_0+SMALL",
+            conf: 90
+        };
+    }
+
+    // Rule E: 5 + BIG → SMALL
+    if (r2Num === 5 && r1Size === "BIG") {
+        prediction = "SMALL";
+        return {
+            type: "SIZE",
+            val: prediction,
+            reason: "RULE_5+BIG",
+            conf: 90
+        };
+    }
+
+    // Rule F: 5 + SMALL → BIG
+    if (r2Num === 5 && r1Size === "SMALL") {
+        prediction = "BIG";
+        return {
+            type: "SIZE",
+            val: prediction,
+            reason: "RULE_5+SMALL",
+            conf: 90
+        };
+    }
+
+    // Rule G: BIG + 0 → BIG
+    if (r2Size === "BIG" && r1Num === 0) {
+        prediction = "BIG";
+        return {
+            type: "SIZE",
+            val: prediction,
+            reason: "RULE_BIG+0",
+            conf: 85
+        };
+    }
+
+    // Rule H: SMALL + 5 → SMALL
+    if (r2Size === "SMALL" && r1Num === 5) {
+        prediction = "SMALL";
+        return {
+            type: "SIZE",
+            val: prediction,
+            reason: "RULE_SMALL+5",
+            conf: 85
+        };
+    }
+
+    // Rule I: SMALL + 6 → SMALL
+    if (r2Size === "SMALL" && r1Num === 6) {
+        prediction = "SMALL";
+        return {
+            type: "SIZE",
+            val: prediction,
+            reason: "RULE_SMALL+6",
+            conf: 80
+        };
+    }
+
+    // Rule J: SMALL + 8 → BIG
+    if (r2Size === "SMALL" && r1Num === 8) {
+        prediction = "BIG";
+        return {
+            type: "SIZE",
+            val: prediction,
+            reason: "RULE_SMALL+8",
+            conf: 80
+        };
+    }
+
+    // STEP 7: Default - Same as latest (R1)
+    prediction = r1Size;
     return {
         type: "SIZE",
-        val: predictedVal,
-        conf: 85,
-        pat: `L${mappedLevel}`,
-        reason: `LEVEL_${mappedLevel}`
+        val: prediction,
+        reason: "DEFAULT_SAME_AS_R1",
+        conf: 50
     };
 }
 
-function updateAfterResult(userId, wasWin, actual, betPlaced, betLevel) {
-    initState(userId);
-    const state = userStates[userId];
-    
-    const isSkip = actual === null;
-    state.lastPredictionWasLoss = isSkip ? false : !wasWin;
-    state.periodCounter++;
+// predictL1L11 removed
 
-    if (!isSkip && typeof actual !== 'undefined') {
-        const sizeVal = actual === 'BIG' || actual === 'SMALL' ? actual : (actual >= 5 ? 'BIG' : 'SMALL');
-        state.resultSizeHistory.push(sizeVal);
-        if (state.resultSizeHistory.length > 18) state.resultSizeHistory.shift();
-        
-        // Clear waitingForDouble if BB or SS appears
-        if (state.waitingForDouble) {
-            const last2 = state.resultSizeHistory.slice(-2).map(s => s === 'BIG' ? 'B' : 'S').join('');
-            if (last2 === 'BB' || last2 === 'SS') {
-                state.waitingForDouble = false;
-            }
-        }
-        
-        updatePatternMemory(userId, state.resultSizeHistory, wasWin);
-    }
+// decidePrediction removed
 
-    if (isSkip) {
-        return;
-    }
-    const outcome = wasWin ? "WIN" : "LOSS";
-    state.predictionOutcomes.push(outcome);
-    if (state.predictionOutcomes.length > 5) {
-        state.predictionOutcomes.shift();
-    }
-
-    if (state.lastDecisionSource === "C4") {
-        if (wasWin) {
-            state.c4Active = true;
-        } else {
-            state.c4Active = false;
-        }
-    } else if (state.lastDecisionSource === "C5") {
-        state.c5Triggered = false;
-        state.c4Active = false;
-    } else if (state.lastDecisionSource === "SKIP") {
-        state.c4Active = false;
-    } else if (state.lastDecisionSource === "ALT4_ACTIVE" || state.alt4Active) {
-        // ALT4 active: clear mode on a loss (handled below in result handling)
-        // keep c4Active off
-        state.c4Active = false;
-    }
-
-    if (isSkip) {
-        return;
-    }
-
-    const currentActiveMode = (state.historyModes.length > 0) ? state.historyModes[state.historyModes.length - 1] : (state.mode === "NORMAL" ? "N" : "R");
-    
-    if (wasWin) {
-        state.consecutivePatternLoss = 0;
-        
-        // Detect win on alternating pattern (BSBSB or SBSBS)
-        const last5 = state.resultSizeHistory.slice(-5).map(s => s === 'BIG' ? 'B' : 'S').join('');
-        if (last5 === 'BSBSB' || last5 === 'SBSBS') {
-            state.waitingForDouble = true;
-        }
-
-        if (currentActiveMode === "N") {
-            state.normalWinsIn20++;
-        } else {
-            state.recoveryWinsIn20++;
-        }
-    } else {
-        state.consecutivePatternLoss++;
-
-        if (state.mode === "NORMAL") {
-            state.mode = "RECOVERY";
-            state.historyModes.push("R");
-        } else {
-            state.mode = "NORMAL";
-            state.historyModes.push("N");
-        }
-        if (state.historyModes.length > 20) {
-            state.historyModes.shift();
-        }
-    }
-
-    if (typeof autobetState !== 'undefined' && autobetState[userId]) {
-        const st = autobetState[userId];
-        const cfg = autobetCfg[userId];
-
-        // ABAB follow logic removed per user request
-        if (betPlaced && wasWin) {
-            st.level = 1;
-            st.consecutiveLoss = 0;
-            st.levelLossCount = 0;
-            st.waitingAction = null;
-            st.waitingTarget = 0;
-            st.watchConsecutiveLosses = 0;
-            state.lastLossLevel = 0;
-            state.l5RecoveryMode = false;
-            return false;
-        }
-
-        if (betPlaced && !wasWin) {
-            const currentRule = getLevelRule(betLevel);
-            const nextLevel = getNextLevel(betLevel, cfg.maxLvl);
-            st.level = nextLevel;
-            st.levelLossCount = 0;
-            state.lastLossLevel = betLevel;
-            state.l5RecoveryMode = betLevel === 5;
-
-            if (currentRule.type === 'watch') {
-                st.waitingAction = 'watch';
-                st.waitingTarget = currentRule.lossesRequired;
-                st.watchConsecutiveLosses = 0;
-            } else if (currentRule.type === 'skip') {
-                // 'skip' rule removed: treat as immediate waitingAction with target but without skip counter
-                st.waitingAction = 'watch';
-                st.waitingTarget = currentRule.skipPeriods;
-                st.watchConsecutiveLosses = 0;
-            } else {
-                st.waitingAction = null;
-                st.waitingTarget = 0;
-                st.watchConsecutiveLosses = 0;
-            }
-
-            if (cfg && cfg.watch) {
-                st.consecutiveLoss = (st.consecutiveLoss || 0) + 1;
-            }
-
-            if (st.level >= 15) {
-                return true;
-            }
-            return false;
-        }
-
-        if (st.waitingAction === 'watch') {
-            if (wasWin) {
-                st.watchConsecutiveLosses = 0;
-            } else {
-                st.watchConsecutiveLosses = (st.watchConsecutiveLosses || 0) + 1;
-            }
-            if (st.watchConsecutiveLosses >= st.waitingTarget) {
-                st.waitingAction = null;
-                st.waitingTarget = 0;
-                st.watchConsecutiveLosses = 0;
-            }
-        } else if (cfg && cfg.watch) {
-            if (wasWin) {
-                st.consecutiveLoss = 0;
-            } else {
-                st.consecutiveLoss = (st.consecutiveLoss || 0) + 1;
-            }
-        }
-    }
-
-    // If ALT4 active mode was running, clear it on a loss (stop when one loss occurs)
-    // ALT4 reset logic removed per user request
-
-    return false;
-}
-
-function getStatus(userId) {
-    initState(userId);
-    const state = userStates[userId];
-    return state.mode;
-}
+// updateAfterResult and getStatus removed
 
 // ============================================================
 // 2. handleWin - UI & Stats
@@ -1386,40 +1117,28 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
 // ============================================================
 // PREDICT LOOP
 // ============================================================
-function parseItem(item) {
-    const n = +(item.number || item.winNumber || 0);
-    return {
-        n,
-        size: n >= 5 ? "BIG" : "SMALL",
-        color:
-            n === 0 ? "RED" :
-            n === 5 ? "GREEN" :
-            n % 2 === 0 ? "RED" : "GREEN"
-    };
-}
 
 async function runPredict(userId, chatId) {
-    if(!running[userId]) return;
+    if (!running[userId]) return;
     initUser(userId);
-    const state = userStates[userId];
     const st = autobetState[userId];
     const cfg = autobetCfg[userId];
 
     if (st.isWaiting) {
         if (Date.now() >= st.nextStartTime) {
             st.isWaiting = false;
-            profitTrack[userId].pnl = 0; 
+            profitTrack[userId].pnl = 0;
             await send(chatId, "🔄 Timed Restart! Starting new section...");
         } else {
-            return setTimeout(()=>runPredict(userId,chatId), 30000);
+            return setTimeout(() => runPredict(userId, chatId), 30000);
         }
     }
 
     const list = await fetchList();
-    if(!list) return setTimeout(()=>runPredict(userId,chatId), 15000);
+    if (!list) return setTimeout(() => runPredict(userId, chatId), 15000);
 
-    const next = (BigInt(list[0].issueNumber)+1n).toString();
-    if(sentPeriods[userId].has(next)) return setTimeout(()=>runPredict(userId,chatId), 2000);
+    const next = (BigInt(list[0].issueNumber) + 1n).toString();
+    if (sentPeriods[userId].has(next)) return setTimeout(() => runPredict(userId, chatId), 2000);
     sentPeriods[userId].add(next);
     if (sentPeriods[userId].size > 50) {
         const firstItem = sentPeriods[userId].values().next().value;
@@ -1427,20 +1146,15 @@ async function runPredict(userId, chatId) {
     }
 
     const signal = decidePrediction(list, st.level, userId);
-    if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
+    if (!signal) return setTimeout(() => runPredict(userId, chatId), 5000);
 
     const waitingDueToLevel = st.waitingAction === 'watch';
-    const isWaitDouble = signal.type === "SKIP" && signal.pat === "WAIT_DOUBLE";
 
     let abLine = "🤖 AutoBet: OFF";
     let canBet = false;
     let waitLine = "";
 
-    if (isWaitDouble) {
-        abLine = "⏳ WAITING FOR BB/SS";
-        waitLine = "\nSkip: Alternating Win";
-        canBet = false;
-    } else if (!cfg || !cfg.enabled) {
+    if (!cfg || !cfg.enabled) {
         abLine = "🤖 AutoBet: OFF";
         canBet = false;
     } else if (waitingDueToLevel) {
@@ -1459,24 +1173,21 @@ async function runPredict(userId, chatId) {
         abLine = (st.level > 1 ? "📈 MART " : "💰 BET ") + "L" + st.level + ": ₹" + curBet;
     }
 
-    const patternName = signal && signal.pat ? signal.pat : (state && state.mode ? state.mode : "NORMAL");
-
-    await send(chatId,
+    const msgText = 
 "╔══════════════════════════╗\n"+
 "║    👑 EARN WITH ME AI    ║\n"+
 "╠══════════════════════════╣\n"+
 "║ Period  : "+next.slice(-6)+"\n"+
 "║ Signal  : "+(signal.val==="BIG"?"🔵 BIG":"🟠 SMALL")+"\n"+
-"║ Pattern : "+patternName+"\n"+
+"║ Reason  : "+signal.reason+"\n"+
 "╠══════════════════════════╣\n"+
 "║ "+abLine+"\n"+
 waitLine+"\n"+
-"╚══════════════════════════╝",
-        {reply_markup:{inline_keyboard:[[{text:"💰 CHECK NOW",url:REG_LINK}]]}}
-    );
+"╚══════════════════════════╝";
+    await send(chatId, msgText, { reply_markup:{inline_keyboard:[[{text:"💰 CHECK NOW",url:REG_LINK}]]} });
 
     let betPlaced = false;
-    if (canBet) { 
+    if (canBet) {
         const result = await placeBet(userId, chatId, next, signal.val, signal.type, st.level);
         if (result && result.ok) {
             betPlaced = true;
@@ -1497,7 +1208,7 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
     const cfg = autobetCfg[userId];
     const st = autobetState[userId];
     const pt = profitTrack[userId];
-    
+
     const poll = async () => {
         if (!running[userId]) return;
         if (++tries > 25) {
@@ -1506,7 +1217,7 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
             return;
         }
 
-        const list = await fetchList(); 
+        const list = await fetchList();
         if (!list || BigInt(list[0].issueNumber) < BigInt(target)) {
             return setTimeout(poll, 10000);
         }
@@ -1516,23 +1227,21 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         let actual;
         if (predType === "SIZE") actual = num >= 5 ? "BIG" : "SMALL";
         else actual = num === 0 ? "RED" : num === 5 ? "GREEN" : num % 2 === 0 ? "RED" : "GREEN";
-        
+
         const win = predicted === actual;
         const betLevel = st.level;
 
-        const shouldStopBot = updateAfterResult(userId, win, actual, betPlaced, betLevel);
-
-        // maintain numeric history for user state (last numbers)
-        initState(userId);
-        if (!userStates[userId].resultNumberHistory) userStates[userId].resultNumberHistory = [];
-        userStates[userId].resultNumberHistory.push(num);
-        if (userStates[userId].resultNumberHistory.length > 20) userStates[userId].resultNumberHistory.shift();
-
-        // If the result was a loss, record the last-three-number triple
-        // for danger tracking. This happens when a bet was placed OR when
-        // the decision originated from a skip-related reason (so skipped
-        // predictions still contribute to dangerTriples).
-        // Removed persistent danger/pair recording; no action needed on loss.
+        // Update level on loss
+        if (betPlaced && !win) {
+            const nextLevel = getNextLevel(betLevel, cfg.maxLvl);
+            st.level = nextLevel;
+            if (st.level >= 15) {
+                running[userId] = false;
+                await send(chatId, "🛑 L15 loss reached — AutoBet stopped.");
+            }
+        } else if (betPlaced && win) {
+            st.level = 1;
+        }
 
         const s = stats[userId];
         s.total++;
@@ -1554,31 +1263,26 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
                 st.nextStartTime = Date.now() + (Number(cfg.restartDelay) || 1) * 60 * 1000;
                 await send(chatId, "🎯 TARGET REACHED! Bot Paused.");
             }
-
-            if (shouldStopBot) {
-                running[userId] = false;
-                await send(chatId, "🛑 L15 loss reached — AutoBet stopped.");
-            }
         } else {
             if (win) {
-                await send(chatId, 
-                    "╔══════════════════════════╗\n"+
-                    "║  👀 WATCH RESULT: WIN! ✅ ║\n"+
-                    "╠══════════════════════════╣\n"+
-                    "║ Number : "+num+"\n"+
-                    "║ Result : "+actual+"\n"+
-                    "║ Status : Correct Prediction\n"+
+                await send(chatId,
+                    "╔══════════════════════════╗\n" +
+                    "║  👀 WATCH RESULT: WIN! ✅ ║\n" +
+                    "╠══════════════════════════╣\n" +
+                    "║ Number : " + num + "\n" +
+                    "║ Result : " + actual + "\n" +
+                    "║ Status : Correct Prediction\n" +
                     "╚══════════════════════════╝"
                 );
                 await sendSticker(chatId, WIN_STICKER);
             } else {
-                await send(chatId, 
-                    "╔══════════════════════════╗\n"+
-                    "║  👀 WATCH RESULT: LOSS ❌ ║\n"+
-                    "╠══════════════════════════╣\n"+
-                    "║ Number : "+num+"\n"+
-                    "║ Result : "+actual+"\n"+
-                    "║ Status : Incorrect Prediction\n"+
+                await send(chatId,
+                    "╔══════════════════════════╗\n" +
+                    "║  👀 WATCH RESULT: LOSS ❌ ║\n" +
+                    "╠══════════════════════════╣\n" +
+                    "║ Number : " + num + "\n" +
+                    "║ Result : " + actual + "\n" +
+                    "║ Status : Incorrect Prediction\n" +
                     "╚══════════════════════════╝"
                 );
                 await sendSticker(chatId, LOSS_STICKER);
@@ -1590,7 +1294,18 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
     setTimeout(poll, 10000);
 }
 
-module.exports = { decidePrediction, updateAfterResult, getStatus, initState, buildBSFromList, runPredict, checkResult };
+// ============================================================
+// PREDICT LOOP - REMOVED
+// ============================================================
+
+// runPredict removed
+
+// ============================================================
+// RESULT CHECKER
+// ============================================================
+// checkResult removed
+
+module.exports = { decidePrediction, runPredict, checkResult };
 
 function showStats(chatId,userId){
     const d=stats[userId],rate=d.total?((d.win/d.total)*100).toFixed(1):"0.0";
@@ -2005,7 +1720,8 @@ if(text==="🔢 Set Watch Losses"){
             if(!hasAccess(id))return send(msg.chat.id,"❌ No access!\n📩 "+ADMIN_HANDLE+"\nID: "+id);
             if(running[id])return send(msg.chat.id,"⚠️ Already running!");
 
-            running[id]=true;sentPeriods[id]=new Set();
+            running[id]=true;
+            sentPeriods[id]=new Set();
             autobetState[id]={
                 level:1,
                 consecutiveLoss:0,
@@ -2013,24 +1729,14 @@ if(text==="🔢 Set Watch Losses"){
                 waitingAction:null,
                 waitingTarget:0,
                 watchConsecutiveLosses:0,
-                inMart:false
+                inMart:false,
+                isWaiting:false,
+                nextStartTime:null
             };
-
-            // Load previous B/S history from API
-            const prevList = await fetchList();
-            initState(id);
-
-            if (prevList && prevList.length >= 4) {
-                // Build B/S history
-                userStates[id].resultHistory = buildBSFromList(prevList, 15);
-                await send(msg.chat.id, "📋 Loaded history: " + (userStates[id].resultHistory || []).join(''));
-
-
-            }
 
             const cfg=autobetCfg[id];
             await send(msg.chat.id,
-"🚀 ENGINE ON!\n\nAutoBet: "+(cfg.enabled?"✅ ON":"❌ OFF")+"\nWatch  : "+(cfg.watch?"ON ("+cfg.watchLoss+"L)":"OFF")+"\nBase   : ₹"+cfg.baseBet+" | MaxLvl: "+cfg.maxLvl
+"🚀 ENGINE ON!\n\nAutoBet: "+(cfg.enabled?"✅ ON":"❌ OFF")+"\nWatch  : "+(cfg.watch?"ON ("+cfg.watchLoss+"L)":"OFF")+"\nBase   : ₹"+cfg.baseBet+" | MaxLvl: "+cfg.maxLvl+"\n\n💡 Using Mirror & Special Rules"
             );
             runPredict(id,msg.chat.id);
         }
@@ -2039,7 +1745,6 @@ if(text==="🔢 Set Watch Losses"){
             send(msg.chat.id,"🛑 Stopped.");
             // Aggressive memory cleanup
             delete sentPeriods[id];
-            delete userStates[id];
             delete autobetState[id];
             delete stats[id];
             delete profitTrack[id];
