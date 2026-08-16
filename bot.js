@@ -8,7 +8,7 @@ const fs          = require('fs');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAHQgFT32JdvP2ELvgBvgl-xof35DeGOxxI"
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAFwn5xGl2EITfol8lVih61_oZe_jnEd478"
 const OWNER_ID     = 1865939951;
 const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
@@ -172,6 +172,12 @@ if (RENDER_URL) {
     }, 14 * 60 * 1000);
 }
 
+// Auto-save prediction data every 5 minutes
+setInterval(() => {
+    savePersistentData();
+    console.log("[AUTO-SAVE] Prediction data saved");
+}, 5 * 60 * 1000);
+
 // ============================================================
 //  STORAGE
 // ============================================================
@@ -211,6 +217,193 @@ async function logBoth(chatId, msg, isError = false) {
                 // Ignore message sending errors to prevent loops
             }
         }
+    }
+}
+
+// ============================================================
+//  PREDICTION RESULT STORAGE & STATISTICS
+// ============================================================
+// Store prediction results to improve accuracy over time
+function ensurePredictionStorage(userId) {
+    if (!persistentData.predictions) persistentData.predictions = {};
+    if (!persistentData.predictions[userId]) {
+        persistentData.predictions[userId] = {
+            results: [],      // [{issue, timestamp, predicted, actual, won, level, confidence, reason}, ...]
+            stats: {
+                byLevel: {},  // {1: {total, wins, losses, accuracy}, ...}
+                byType: {},   // {SIZE: {total, wins, losses, accuracy}, COLOR: {...}}
+                overall: { total: 0, wins: 0, losses: 0, accuracy: 0 }
+            }
+        };
+    }
+    return persistentData.predictions[userId];
+}
+
+function savePredictionResult(userId, issue, predicted, actual, won, level, confidence, reason, predType = "SIZE", part = null) {
+    try {
+        const storage = ensurePredictionStorage(userId);
+        
+        // Record result
+        const result = {
+            issue: String(issue),
+            timestamp: Date.now(),
+            predicted,
+            actual,
+            won: !!won,
+            level: Number(level) || 1,
+            confidence: Number(confidence) || 50,
+            reason,
+            type: predType,
+            part: Number(part) || null
+        };
+        
+        storage.results.push(result);
+        if (storage.results.length > 1000) {
+            storage.results.shift(); // Keep last 1000 results
+        }
+        
+        // Update statistics
+        updatePredictionStats(userId);
+        
+        // Save to disk
+        savePersistentData();
+        
+        return result;
+    } catch (e) {
+        console.error("[PREDICTION STORAGE ERROR]", e.message);
+        return null;
+    }
+}
+
+function updatePredictionStats(userId) {
+    try {
+        const storage = ensurePredictionStorage(userId);
+        const { results } = storage;
+        
+        // Reset stats
+        storage.stats = {
+            byLevel: {},
+            byType: {},
+            overall: { total: 0, wins: 0, losses: 0, accuracy: 0 }
+        };
+        
+        results.forEach(r => {
+            const level = r.level || 1;
+            const type = r.type || "SIZE";
+            
+            // By Level
+            if (!storage.stats.byLevel[level]) {
+                storage.stats.byLevel[level] = { total: 0, wins: 0, losses: 0, accuracy: 0 };
+            }
+            storage.stats.byLevel[level].total++;
+            if (r.won) storage.stats.byLevel[level].wins++;
+            else storage.stats.byLevel[level].losses++;
+            storage.stats.byLevel[level].accuracy = 
+                storage.stats.byLevel[level].total > 0 
+                    ? (storage.stats.byLevel[level].wins / storage.stats.byLevel[level].total * 100).toFixed(1)
+                    : 0;
+            
+            // By Type
+            if (!storage.stats.byType[type]) {
+                storage.stats.byType[type] = { total: 0, wins: 0, losses: 0, accuracy: 0 };
+            }
+            storage.stats.byType[type].total++;
+            if (r.won) storage.stats.byType[type].wins++;
+            else storage.stats.byType[type].losses++;
+            storage.stats.byType[type].accuracy = 
+                storage.stats.byType[type].total > 0 
+                    ? (storage.stats.byType[type].wins / storage.stats.byType[type].total * 100).toFixed(1)
+                    : 0;
+            
+            // Overall
+            storage.stats.overall.total++;
+            if (r.won) storage.stats.overall.wins++;
+            else storage.stats.overall.losses++;
+        });
+        
+        storage.stats.overall.accuracy = 
+            storage.stats.overall.total > 0 
+                ? (storage.stats.overall.wins / storage.stats.overall.total * 100).toFixed(1)
+                : 0;
+        
+        savePersistentData();
+    } catch (e) {
+        console.error("[STATS UPDATE ERROR]", e.message);
+    }
+}
+
+function getPredictionStats(userId, level = null) {
+    const storage = ensurePredictionStorage(userId);
+    if (level !== null) {
+        return storage.stats.byLevel[level] || { total: 0, wins: 0, losses: 0, accuracy: 0 };
+    }
+    return storage.stats;
+}
+
+function getAdaptiveAccuracyLevel(userId, currentLevel, maxLvl = 15) {
+    try {
+        const storage = ensurePredictionStorage(userId);
+        const recent = (storage.results || []).slice(-30);
+        if (recent.length < 8) {
+            return Math.max(1, Number(currentLevel) || 1);
+        }
+
+        const wins = recent.filter(r => !!r.won).length;
+        const accuracy = (wins / recent.length) * 100;
+        const safeBase = Math.max(1, Number(currentLevel) || 1);
+        const safeMax = Math.max(1, Number(maxLvl) || 15);
+
+        let boost = 0;
+        if (accuracy >= 90) boost = 2;
+        else if (accuracy >= 80) boost = 1;
+        else if (accuracy >= 70) boost = 0;
+        else if (accuracy <= 35) boost = -2;
+        else if (accuracy <= 45) boost = -1;
+
+        return Math.max(1, Math.min(safeMax, safeBase + boost));
+    } catch (e) {
+        console.error("[ADAPTIVE LEVEL ERROR]", e.message);
+        return Math.max(1, Number(currentLevel) || 1);
+    }
+}
+
+function getMlLevelRecommendation(userId, currentLevel, maxLvl = 15) {
+    try {
+        const storage = ensurePredictionStorage(userId);
+        const recent = (storage.results || []).slice(-20);
+        if (recent.length < 6) {
+            return Math.max(1, Number(currentLevel) || 1);
+        }
+
+        const safeBase = Math.max(1, Number(currentLevel) || 1);
+        const safeMax = Math.max(1, Number(maxLvl) || 15);
+
+        const recentWins = recent.filter(r => !!r.won).length;
+        const windowAccuracy = (recentWins / recent.length) * 100;
+        const lastTen = recent.slice(-10);
+        const lastTenWins = lastTen.filter(r => !!r.won).length;
+        const recent10Accuracy = (lastTenWins / lastTen.length) * 100;
+
+        let momentum = 0;
+        for (let i = 1; i < recent.length; i++) {
+            if (recent[i].won && !recent[i - 1].won) momentum += 1;
+            if (!recent[i].won && recent[i - 1].won) momentum -= 1;
+        }
+
+        const riskPenalty = recent.filter(r => !r.won).slice(-4).length * 4;
+        const mlScore = (windowAccuracy * 0.45) + (recent10Accuracy * 0.35) + (Math.max(-10, Math.min(10, momentum)) * 2.5) - riskPenalty;
+
+        let delta = 0;
+        if (mlScore >= 82) delta = 2;
+        else if (mlScore >= 72) delta = 1;
+        else if (mlScore <= 38) delta = -2;
+        else if (mlScore <= 48) delta = -1;
+
+        const combined = safeBase + delta;
+        return Math.max(1, Math.min(safeMax, combined));
+    } catch (e) {
+        console.error("[ML LEVEL ERROR]", e.message);
+        return Math.max(1, Number(currentLevel) || 1);
     }
 }
 
@@ -324,8 +517,11 @@ function loadPersistentData() {
     }
     if (!persistentData.keyStore) persistentData.keyStore = {};
     if (!persistentData.usersAccess) persistentData.usersAccess = {};
+    if (!persistentData.predictions) persistentData.predictions = {};
+    if (!persistentData.profitTrack) persistentData.profitTrack = {};
     keyStore = persistentData.keyStore;
     usersAccess = persistentData.usersAccess;
+    profitTrack = persistentData.profitTrack;
 }
 function savePersistentData() {
     try {
@@ -333,6 +529,8 @@ function savePersistentData() {
         // Merge known persistent stores
         current.keyStore      = keyStore                    || {};
         current.usersAccess   = usersAccess                 || {};
+        current.profitTrack   = profitTrack                 || {};
+        current.predictions   = persistentData.predictions  || {};
         fs.writeFileSync("bot_data.json", JSON.stringify(current, null, 2), "utf8");
     } catch (e) {
         console.error("[DATA] Failed to save bot_data.json:", e.message);
@@ -806,268 +1004,1163 @@ async function placeBet(userId, chatId, period, prediction, predType, level) {
     return false;
 }
 // ============================================================
-// PREDICTION LOGIC - MIRROR & SPECIAL RULES
+// PREDICTION LOGIC — 8-PART MASTERMIND ULTRA v10 ENGINE
+// Ported from wingo_bot_30s_8parts_final.py
 // ============================================================
 
-// Helper: Convert number to size
-function getSize(num) {
-    const n = Number(num);
-    return n >= 5 ? "BIG" : "SMALL";
-}
-
-// Helper: Get opposite size
-function opposite(size) {
-    return size === "BIG" ? "SMALL" : "BIG";
-}
-
-// Helper: Extract result number from item
+// -------- BASIC HELPERS --------
+function getSize(num) { const n = Number(num); return n >= 5 ? "BIG" : "SMALL"; }
+function isSmallJ(n) { return Number(n) <= 4; }
+function isRedJ(n) { return [0,2,4,6,8].includes(Number(n)); }
+function getSizeBS(n) { return isSmallJ(n) ? "S" : "B"; }
+function opposite(size) { return size === "BIG" ? "SMALL" : (size === "SMALL" ? "BIG" : (size === "B" ? "S" : "B")); }
 function getResultNum(item) {
     if (!item) return null;
     const num = item.number !== undefined ? item.number : item.winNumber;
     return num !== undefined ? Number(num) : null;
 }
-
-// Helper: Check for ABAB pattern in last 5 results
 function checkABABPattern(list) {
     if (!list || list.length < 5) return false;
-    
-    // Get latest 5 results
     const last5 = [];
     for (let i = 0; i < 5; i++) {
         const num = getResultNum(list[i]);
         if (num === null) return false;
         last5.push(getSize(num));
     }
-    
-    // Reverse to get chronological order (oldest to newest)
     last5.reverse();
-    
-    // Check for BSBSB or SBSBS pattern
-    const pattern = last5.join("");
-    return pattern === "BSBSB" || pattern === "SBSBS";
+    const p = last5.join("");
+    return p === "BSBSB" || p === "SBSBS";
 }
 
-/**
- * NEW PREDICTION LOGIC WITH ABAB PATTERN
- * Priority:
- * 1. Mirror pattern (R3 == R1) - highest priority
- * 2. ABAB pattern (last 5 results alternating: BSBSB or SBSBS)
- * 3. Special 2-result rules (0+0, 5+5, 0+BIG, 0+SMALL, 5+BIG, 5+SMALL)
- * 4. BIG + 0 → BIG
- * 5. SMALL + 5 → SMALL
- * 6. SMALL + 6 → SMALL
- * 7. SMALL + 8 → BIG
- * 8. Default: Same as latest (R1)
- */
-function decidePrediction(list, currentLevel, userId) {
-    if (!list || list.length < 3) {
-        return null;
-    }
+// -------- 8-PART GLOBAL STATE (per-user independent) --------
+const LOSS_TRIGGER = 6;
 
-    const r1Num = getResultNum(list[0]);
-    const r2Num = getResultNum(list[1]);
-    const r3Num = getResultNum(list[2]);
-
-    if (r1Num === null || r2Num === null || r3Num === null) {
-        return null;
-    }
-
-    const r1Size = getSize(r1Num);
-    const r2Size = getSize(r2Num);
-    const r3Size = getSize(r3Num);
-
-    const lvl = Number(currentLevel);
-
-    // L1-L4: Same as latest result
-    if (lvl >= 1 && lvl <= 4) {
-        return {
-            type: "SIZE",
-            val: r1Size,
-            reason: "L1_L4_SAME_AS_LATEST",
-            conf: 100
-        };
-    }
-
-    // L5: Opposite of latest result
-    if (lvl === 5) {
-        return {
-            type: "SIZE",
-            val: opposite(r1Size),
-            reason: "L5_OPPOSITE_OF_LATEST",
-            conf: 100
-        };
-    }
-
-    // L6: Same as latest result
-    if (lvl === 6) {
-        return {
-            type: "SIZE",
-            val: r1Size,
-            reason: "L6_SAME_AS_LATEST",
-            conf: 100
-        };
-    }
-
-    // L7: Opposite of latest result
-    if (lvl === 7) {
-        return {
-            type: "SIZE",
-            val: opposite(r1Size),
-            reason: "L7_OPPOSITE_OF_LATEST",
-            conf: 100
-        };
-    }
-
-    // L8: Same as latest result
-    if (lvl === 8) {
-        return {
-            type: "SIZE",
-            val: r1Size,
-            reason: "L8_SAME_AS_LATEST",
-            conf: 100
-        };
-    }
-
-    // L9-L15: Current system logic (pattern-based)
-    let prediction = null;
-
-    // STEP 1: Mirror Pattern (R3 == R1) - HIGHEST PRIORITY
-    if (r3Num === r1Num) {
-        prediction = opposite(r1Size);
-        return {
-            type: "SIZE",
-            val: prediction,
-            reason: `MIRROR(${r3Num}==${r1Num})`,
-            conf: 95
-        };
-    }
-
-    // STEP 1.5: ABAB Pattern (Last 5 Results Alternating) - HIGH PRIORITY
-    if (checkABABPattern(list)) {
-        prediction = opposite(r1Size);
-        return {
-            type: "SIZE",
-            val: prediction,
-            reason: "ABAB_PATTERN",
-            conf: 90
-        };
-    }
-
-    // STEP 2: Special 2-Result Rules (R2 + R1)
-    if (r2Num === 0 && r1Num === 0) {
-        prediction = "SMALL";
-        return {
-            type: "SIZE",
-            val: prediction,
-            reason: "RULE_0+0",
-            conf: 95
-        };
-    }
-
-    if (r2Num === 5 && r1Num === 5) {
-        prediction = "BIG";
-        return {
-            type: "SIZE",
-            val: prediction,
-            reason: "RULE_5+5",
-            conf: 95
-        };
-    }
-
-    if (r2Num === 0 && r1Size === "BIG") {
-        prediction = "SMALL";
-        return {
-            type: "SIZE",
-            val: prediction,
-            reason: "RULE_0+BIG",
-            conf: 90
-        };
-    }
-
-    if (r2Num === 0 && r1Size === "SMALL") {
-        prediction = "BIG";
-        return {
-            type: "SIZE",
-            val: prediction,
-            reason: "RULE_0+SMALL",
-            conf: 90
-        };
-    }
-
-    if (r2Num === 5 && r1Size === "BIG") {
-        prediction = "SMALL";
-        return {
-            type: "SIZE",
-            val: prediction,
-            reason: "RULE_5+BIG",
-            conf: 90
-        };
-    }
-
-    if (r2Num === 5 && r1Size === "SMALL") {
-        prediction = "BIG";
-        return {
-            type: "SIZE",
-            val: prediction,
-            reason: "RULE_5+SMALL",
-            conf: 90
-        };
-    }
-
-    if (r2Size === "BIG" && r1Num === 0) {
-        prediction = "BIG";
-        return {
-            type: "SIZE",
-            val: prediction,
-            reason: "RULE_BIG+0",
-            conf: 85
-        };
-    }
-
-    if (r2Size === "SMALL" && r1Num === 5) {
-        prediction = "SMALL";
-        return {
-            type: "SIZE",
-            val: prediction,
-            reason: "RULE_SMALL+5",
-            conf: 85
-        };
-    }
-
-    if (r2Size === "SMALL" && r1Num === 6) {
-        prediction = "SMALL";
-        return {
-            type: "SIZE",
-            val: prediction,
-            reason: "RULE_SMALL+6",
-            conf: 80
-        };
-    }
-
-    if (r2Size === "SMALL" && r1Num === 8) {
-        prediction = "BIG";
-        return {
-            type: "SIZE",
-            val: prediction,
-            reason: "RULE_SMALL+8",
-            conf: 80
-        };
-    }
-
-    prediction = r1Size;
+function createEngineState(name) {
     return {
-        type: "SIZE",
-        val: prediction,
-        reason: "SYSTEM_DEFAULT_SAME_AS_R1",
-        conf: 50
+        name, lossCount: 0, active: false, curPred: null,
+        wins: 0, losses: 0, hist: [], bestStreak: 0, _winStreak: 0
     };
 }
 
-// predictL1L11 removed
+const userPartState = {};
 
-// decidePrediction removed
+function ensurePartState(userId) {
+    if (!userPartState[userId]) {
+        userPartState[userId] = {
+            logicPart: 1, part5Level: 1,
+            consecutiveLoss: 0, level: 1, streak: 0,
+            hist: [], p4Markov: {}, p4DigitStats: {}, p8PatternDB: [],
+            switchReason: "Started on P1 (default master)",
+            lastSwitchFrom: null,
+            e1: createEngineState("PART1"), e2: createEngineState("PART2"),
+            e3: createEngineState("PART3"), e4: createEngineState("PART4"),
+            e5: createEngineState("PART5"), e6: createEngineState("PART6"),
+            e7: createEngineState("PART7"), e8: createEngineState("PART8"),
+            e9: createEngineState("PART9")
+        };
+    }
+    return userPartState[userId];
+}
 
-// updateAfterResult and getStatus removed
+function resetPartState(userId) {
+    delete userPartState[userId];
+    return ensurePartState(userId);
+}
+
+function partEngine(st, part) {
+    const arr = [null, st.e1, st.e2, st.e3, st.e4, st.e5, st.e6, st.e7, st.e8];
+    if (part <= 8) return arr[part];
+    if (part === 9) return st.e9 || st.e8;
+    return st.e8;
+}
+
+function selectLowestStreakPart(st) {
+    let bestPart = 1;
+    let bestLoss = Infinity;
+    for (let p = 1; p <= 8; p++) {
+        const lc = partEngine(st, p).lossCount || 0;
+        if (lc < bestLoss) {
+            bestLoss = lc;
+            bestPart = p;
+        }
+    }
+    return bestPart;
+}
+
+function scorePartPattern(e) {
+    const wins = Number(e.wins) || 0;
+    const losses = Number(e.losses) || 0;
+    const total = wins + losses;
+    const overallRate = total > 0 ? wins / total : 0;
+    const recent = Array.isArray(e.hist) ? e.hist.slice(-8) : [];
+    const recentWins = recent.filter(h => !!h.won).length;
+    const recentRate = recent.length > 0 ? recentWins / recent.length : 0;
+    const bestStreak = Number(e.bestStreak) || 0;
+    const lossPenalty = (Number(e.lossCount) || 0) * 0.12;
+    return (overallRate * 45) + (recentRate * 35) + (bestStreak * 0.2) + (e.active ? 5 : 0) - lossPenalty;
+}
+
+function selectBestPatternPart(st, currentPart = st.logicPart || 1) {
+    let bestPart = currentPart;
+    let bestScore = -Infinity;
+    for (let p = 1; p <= 8; p++) {
+        const e = partEngine(st, p);
+        const score = scorePartPattern(e);
+        if (score > bestScore) {
+            bestScore = score;
+            bestPart = p;
+        }
+    }
+    return bestPart;
+}
+
+function selectBestPart(st, triggerPart) {
+    let bestPart = 1;
+    let bestScore = [-Infinity, -Infinity, -Infinity];
+    const tp = Number(triggerPart) || 0;
+    for (let p = 1; p <= 8; p++) {
+        const e = partEngine(st, p);
+        const w = Number(e.wins) || 0;
+        const l = Number(e.losses) || 0;
+        const lc = Number(e.lossCount) || 0;
+        const lossRate = (l + 1) / (w + l + 2);
+        const score = [lossRate, lc, p === tp ? 0 : 1];
+        if (
+            score[0] > bestScore[0] ||
+            (score[0] === bestScore[0] && score[1] > bestScore[1]) ||
+            (score[0] === bestScore[0] && score[1] === bestScore[1] && score[2] > bestScore[2])
+        ) {
+            bestScore = score;
+            bestPart = p;
+        }
+    }
+    const rates = [];
+    for (let p = 1; p <= 8; p++) {
+        const e = partEngine(st, p);
+        const w = Number(e.wins) || 0, l = Number(e.losses) || 0;
+        rates.push(`P${p} ${(100*((l+1)/(w+l+2))).toFixed(0)}%(${l}/${w+l})`);
+    }
+    return { part: bestPart, lossRate: bestScore[0], summary: rates.join(" | ") };
+}
+
+function recordEngineResult(eng, won, issue, resultNum, pred) {
+    eng.hist.push({ issue, result: resultNum, pred: pred.prediction || "?", numbers: pred.numbers || [], primary: pred.primary || 0, engine: pred.engine || eng.name, won });
+    if (eng.hist.length > 400) eng.hist.shift();
+    if (won) {
+        eng.wins++; eng._winStreak++;
+        if (eng._winStreak > eng.bestStreak) eng.bestStreak = eng._winStreak;
+        eng.lossCount = 0; eng.active = false;
+    } else {
+        eng.losses++; eng._winStreak = 0; eng.lossCount++;
+        if (!eng.active && eng.lossCount >= LOSS_TRIGGER) eng.active = true;
+    }
+}
+
+// ============================================================
+// PART 1 — MASTERMIND ULTRA v10 AI ENGINE
+// ============================================================
+function masterAiV10(history, level, st) {
+    const fallback = (lvl) => ({
+        prediction: lvl === 3 ? "B" : "S",
+        confidence: lvl === 3 ? 97 : (lvl === 2 ? 93 : 88),
+        numbers: lvl === 3 ? [7,8] : [2,3],
+        primary: lvl === 3 ? 7 : 2,
+        engine: "MASTERMIND ULTRA v10"
+    });
+    const nums = history.filter(n => typeof n === 'number' && !isNaN(n) && 0 <= n && n <= 9).map(Number);
+    if (nums.length < 3) return fallback(level);
+
+    const freq = new Array(10).fill(0);
+    for (let i = 0; i < nums.length; i++) {
+        const n = nums[i];
+        const w = Math.pow(0.85, nums.length - 1 - i);
+        freq[n] += w * 2;
+        if (n > 0) freq[n-1] += w * 0.4;
+        if (n < 9) freq[n+1] += w * 0.4;
+    }
+
+    const l3 = nums.slice(-3), l5 = nums.slice(-5);
+    const l7 = nums.slice(-Math.min(7, nums.length));
+    const l12 = nums.slice(-Math.min(12, nums.length));
+    const sm3 = l3.filter(n => n <= 4).length;
+    const sm5 = l5.filter(n => n <= 4).length;
+    const sm7 = l7.filter(n => n <= 4).length;
+    const sm12 = l12.filter(n => n <= 4).length;
+
+    let ss = (sm3/3)*0.40 + (sm5/5)*0.28 + (sm7/7)*0.20 + (sm12/12)*0.12;
+    let bs = ((3-sm3)/3)*0.40 + ((5-sm5)/5)*0.28 + ((7-sm7)/7)*0.20 + ((12-sm12)/12)*0.12;
+
+    let sl = 0, sd = null;
+    for (let i = nums.length - 1; i >= 0; i--) {
+        const isS = nums[i] <= 4;
+        if (sd === null) { sd = isS; sl = 1; }
+        else if (isS === sd) sl++;
+        else break;
+    }
+    if (sl >= 4) { if (sd) bs += 0.38; else ss += 0.38; }
+    else if (sl >= 2) { if (sd) ss += 0.15; else bs += 0.15; }
+
+    let alt = 0;
+    for (let i = nums.length - 1; i > 0; i--) {
+        if ((nums[i] <= 4) !== (nums[i-1] <= 4)) alt++;
+        else break;
+    }
+    if (alt >= 3) { if (nums[nums.length-1] <= 4) ss += 0.28; else bs += 0.28; }
+
+    if (sm5 >= 4) bs += 0.42;
+    if (sm5 <= 1) ss += 0.42;
+    if (sm3 === 3) bs += 0.22;
+    if (sm3 === 0) ss += 0.22;
+
+    let pred;
+    if (level === 3) {
+        pred = sm3 >= 2 ? "B" : "S";
+        const sf = freq.slice(0,5).reduce((a,b)=>a+b,0);
+        const bf = freq.slice(5,10).reduce((a,b)=>a+b,0);
+        if (Math.abs(sf - bf) > 0.6) pred = bf > sf ? "B" : "S";
+    } else if (level === 2) {
+        if (st.consecutiveLoss >= 1 && st.hist.length > 0) {
+            const lp = st.hist[st.hist.length - 1].pred || "S";
+            pred = lp === "S" ? "B" : "S";
+        } else pred = ss >= bs ? "S" : "B";
+    } else pred = ss >= bs ? "S" : "B";
+
+    const tgt = pred === "S" ? [0,1,2,3,4] : [5,6,7,8,9];
+    const srt = [...tgt].sort((a,b) => freq[b] - freq[a]);
+    const pri = srt[0];
+    const sec = srt[1] !== undefined ? srt[1] : (pred === "S" ? 2 : 7);
+    const thr = level === 3 ? (srt[2] !== undefined ? srt[2] : (pred === "S" ? 0 : 9)) : null;
+
+    const diff = Math.abs(ss - bs);
+    const bc = level === 3 ? 96 : (level === 2 ? 92 : 87);
+    const sb = (st.streak || 0) >= 5 ? 2 : ((st.streak || 0) >= 3 ? 1 : 0);
+    const conf = Math.min(99, Math.round(bc + diff * 6 + sb));
+    const nums2 = thr === null ? [pri, sec] : [pri, sec, thr];
+    const eng = level === 3 ? "JACKPOT-CONFIRM v10 💀" : (level === 2 ? "RECOVERY v10 🔥" : "MASTERMIND ULTRA v10");
+    const pat = nums.slice(-9).map(n => n <= 4 ? "S" : "B").join("");
+    return { prediction: pred, confidence: conf, numbers: nums2, primary: pri, pattern: pat, engine: eng };
+}
+
+// ============================================================
+// PART 2 — DEEP PATTERN ANALYSIS ENGINE (20 signals)
+// ============================================================
+function part2AiAnalyze(results) {
+    function extract(raw) {
+        const out = [];
+        for (const r of (raw || []).slice(0, 10)) {
+            let v = r.number;
+            if (v === null || v === undefined) {
+                for (const f of ["result_number","num","value","result"]) {
+                    v = r[f];
+                    if (v !== null && v !== undefined) break;
+                }
+            }
+            try {
+                const n = parseInt(v);
+                if (!isNaN(n) && 0 <= n && n <= 9) out.push(n);
+            } catch(e) {}
+        }
+        return out;
+    }
+    const nums = extract(results);
+    if (nums.length < 5) {
+        return { prediction: "S", confidence: 60, numbers: [2,3], primary: 2, engine: "PART2-DEEP-10", pattern: "", big_count: 0, small_count: nums.length, pattern_score_big: 0, pattern_score_small: 0, patterns_triggered: 0, current_num: nums[0] || 0, signals: [] };
+    }
+    let score = 0.0; const hits = [];
+    const current = nums[0];
+    const sizes = nums.map(n => n >= 5 ? "B" : "S");
+
+    let b = 0, s = 0;
+    for (let i = 1; i < nums.length; i++) {
+        if (nums[i] === current) {
+            const nxt = nums[i-1];
+            if (nxt >= 5) b++; else s++;
+        }
+    }
+    if (b + s) { score += ((b - s) / (b + s)) * 2.5; hits.push(`P1:${b}B/${s}S`); }
+
+    const l3 = sizes.slice(0, 3), l5 = sizes.slice(0, 5);
+    const b3 = l3.filter(x => x === "B").length, b5 = l5.filter(x => x === "B").length;
+    if (l3.length === 3) {
+        if (b3 === 3) { score -= 1.6; hits.push("P2:3B→S"); }
+        else if (b3 === 0) { score += 1.6; hits.push("P2:3S→B"); }
+        else if (b3 >= 2) { score -= 0.5; hits.push("P2:2/3B"); }
+        else { score += 0.5; hits.push("P2:1/3B"); }
+    }
+    if (b5 >= 4) { score -= 1.3; hits.push("P3:4/5B→S"); }
+    else if (b5 <= 1) { score += 1.3; hits.push("P3:1/5B→B"); }
+
+    const altCount = sizes.slice(1).reduce((acc, v, i) => acc + (v !== sizes[i] ? 1 : 0), 0);
+    if (altCount >= 7) {
+        score += sizes[0] === "B" ? -1.5 : 1.5;
+        hits.push("P4/P12:ALT");
+    }
+
+    const big = nums.filter(n => n >= 5).length;
+    const small = nums.length - big;
+    if (big >= 7) { score -= 0.8; hits.push("P6:B-heavy→S"); }
+    else if (small >= 7) { score += 0.8; hits.push("P6:S-heavy→B"); }
+
+    if (current === 8 || current === 9) { score += 0.4; hits.push("P7:HIGH"); }
+    else if (current === 0 || current === 1) { score -= 0.4; hits.push("P7:LOW"); }
+
+    const rev = sizes.slice(1).reduce((acc, v, i) => acc + (v !== sizes[i] ? 1 : 0), 0);
+    const revRate = rev / Math.max(1, sizes.length - 1);
+    if (revRate >= 0.65) { score += sizes[0] === "B" ? 0.8 : -0.8; hits.push("P8:HIGH-REV"); }
+    else if (revRate <= 0.35) { score += sizes[0] === "B" ? -0.5 : 0.5; hits.push("P8:LOW-REV"); }
+
+    if (nums.slice(1, 6).filter(n => n === current).length >= 2) {
+        score += b > s ? 0.7 : -0.7; hits.push("P9:REPEAT");
+    }
+
+    let streak = 1;
+    while (streak < sizes.length && sizes[streak] === sizes[0]) streak++;
+    if (streak >= 3) {
+        score += sizes[0] === "S" ? 1.2 : -1.2;
+        hits.push(`P10/P11:STREAK${streak}`);
+    }
+
+    if (sizes.length >= 3 && sizes[1] === sizes[2]) {
+        score += sizes[1] === "S" ? 0.6 : -0.6;
+        hits.push("P13:PAIR");
+    }
+
+    let evenBig = 0, oddSmall = 0;
+    for (let i = 1; i < nums.length; i++) {
+        if (nums[i] === current) {
+            const nxt = nums[i-1];
+            if (nxt % 2 === 0 && nxt >= 5) evenBig++;
+            if (nxt % 2 === 1 && nxt <= 4) oddSmall++;
+        }
+    }
+    if (evenBig > oddSmall) { score += 0.3; hits.push("P16:EVEN→B"); }
+    else if (oddSmall > evenBig) { score -= 0.3; hits.push("P16:ODD→S"); }
+
+    const weighted = nums.reduce((acc, n, i) => acc + (Math.pow(0.9, i) * (n >= 5 ? 1 : -1)), 0);
+    score += weighted * 0.06;
+
+    if (sizes.length >= 5) {
+        let pre = sizes[1], preLen = 1;
+        while (preLen + 1 < sizes.length && sizes[preLen + 1] === pre) preLen++;
+        if (sizes[0] !== pre && preLen >= 3) {
+            score += sizes[0] === "B" ? -0.5 : 0.5;
+            hits.push("P18:BREAK");
+        }
+    }
+
+    if (current === 0 || current === 1) { score -= 0.7; hits.push("P19:EXTREME-LOW"); }
+    else if (current === 8 || current === 9) { score += 0.7; hits.push("P19:EXTREME-HIGH"); }
+
+    if (sizes.length >= 4) {
+        const sig = sizes.slice(0, 3).join("");
+        let nb = 0, ns = 0;
+        for (let i = 1; i < sizes.length - 2; i++) {
+            if (sizes.slice(i, i + 3).join("") === sig) {
+                if (sizes[i-1] === "B") nb++; else ns++;
+            }
+        }
+        if (nb + ns) {
+            score += ((nb - ns) / (nb + ns)) * 1.0;
+            hits.push(`P20:${sig}`);
+        }
+    }
+
+    const predB = score > 0;
+    const pred = predB ? "B" : "S";
+    const confidence = Math.min(95, Math.max(60, Math.round(68 + Math.abs(score) * 4 + Math.min(8, hits.length * 0.5))));
+    const target = predB ? [5,6,7,8,9] : [0,1,2,3,4];
+    const freqMap = {};
+    target.forEach(n => freqMap[n] = nums.filter(x => x === n).length);
+    const top = [...target].sort((a, b) => (freqMap[b] - freqMap[a]) || (b - a));
+    return {
+        prediction: pred, confidence, numbers: [top[0], top[1]], primary: top[0],
+        engine: "PART2-DEEP-10", pattern: sizes.slice(0, 9).join(""),
+        big_count: big, small_count: small,
+        pattern_score_big: Math.round(Math.max(score, 0) * 100) / 100,
+        pattern_score_small: Math.round(Math.max(-score, 0) * 100) / 100,
+        patterns_triggered: hits.length, current_num: current,
+        big_examples: [], small_examples: [], signals: hits
+    };
+}
+
+// ============================================================
+// PART 3 — HYBRID SCORING ENGINE (8 modules, BIG/SMALL only)
+// ============================================================
+class TrendAnalyzer { analyze(nums) {
+    if (nums.length < 5) return { score: 50, predicted_number: null };
+    const n = nums.length; const sx = (n-1)*n/2; const sy = nums.reduce((a,b)=>a+b,0);
+    let sxy = 0, sxx = 0;
+    for (let i = 0; i < n; i++) { sxy += i * nums[i]; sxx += i*i; }
+    const d = (n * sxx - sx * sx);
+    const slope = (n * sxy - sx * sy) / Math.max(1, d);
+    const nxt = Math.max(0, Math.min(9, Math.round(sy / n + slope * n)));
+    return { score: Math.min(100, Math.round(50 + Math.abs(slope) * 25)), predicted_number: nxt };
+}}
+class PatternRecognizer { analyze(nums) {
+    const w = 4;
+    if (nums.length < w * 2) return { score: 45, predicted_number: null, matches: 0 };
+    const tail = nums.slice(0, w); const matches = [];
+    for (let i = w; i < nums.length - w; i++) {
+        if (nums.slice(i, i + w).every((v, idx) => v === tail[idx])) matches.push(nums[i - 1]);
+    }
+    if (!matches.length) return { score: 45, predicted_number: null, matches: 0 };
+    const freq = {}; matches.forEach(m => freq[m] = (freq[m] || 0) + 1);
+    let best = matches[0], bc = 0;
+    Object.keys(freq).forEach(k => { if (freq[k] > bc) { bc = freq[k]; best = Number(k); } });
+    return { score: Math.min(95, 50 + matches.length * 8), predicted_number: best, matches: matches.length };
+}}
+class FrequencyAnalyzer { analyze(nums) {
+    const ns = nums.slice(0, 30); const freq = {}; ns.forEach(n => freq[n] = (freq[n] || 0) + 1);
+    const total = ns.length; if (!total) return { score: 50, predicted_number: 5 };
+    let hot = 0, hp = 0;
+    Object.keys(freq).forEach(k => { if (freq[k] > hp) { hp = freq[k]; hot = Number(k); } });
+    const hotPct = hp / total * 100;
+    return { score: Math.min(95, Math.round(50 + (hotPct - 10) * 3)), predicted_number: hot };
+}}
+class HotColdAnalyzer { analyze(nums) {
+    const recent = nums.slice(0, 15), older = nums.slice(15, 50);
+    const rf = {}, of = {};
+    recent.forEach(n => rf[n] = (rf[n] || 0) + 1);
+    older.forEach(n => of[n] = (of[n] || 0) + 1);
+    const delta = {};
+    for (let i = 0; i < 10; i++) delta[i] = ((rf[i]||0)/Math.max(recent.length,1)) - ((of[i]||0)/Math.max(older.length,1));
+    let hot = 0, hv = -Infinity;
+    for (let i = 0; i < 10; i++) if (delta[i] > hv) { hv = delta[i]; hot = i; }
+    return { score: Math.min(90, Math.round(55 + hv * 80)), predicted_number: hot };
+}}
+class BigSmallAnalyzer { analyze(nums) {
+    const ns = nums.slice(0, 20); const big = ns.filter(x => x >= 5).length; const total = ns.length;
+    const bp = total ? big / total * 100 : 50; const sp = 100 - bp;
+    let pred;
+    if (bp >= 60) pred = "Small";
+    else if (sp >= 60) pred = "Big";
+    else pred = big >= total - big ? "Small" : "Big";
+    return { score: Math.min(90, Math.round(50 + Math.abs(bp - 50) * 0.8)), predicted_size: pred, big_pct: Math.round(bp*10)/10, small_pct: Math.round(sp*10)/10 };
+}}
+class StreakDetector { analyze(nums) {
+    if (!nums.length) return { score: 50, predicted_number: null, streak_length: 0 };
+    const cur = nums[0]; let streak = 1;
+    for (let i = 1; i < nums.length; i++) { if (nums[i] === cur) streak++; else break; }
+    if (streak >= 3) {
+        const alt = cur < 9 ? cur + 1 : cur - 1;
+        return { score: Math.min(88, 55 + streak * 5), predicted_number: alt, streak_length: streak };
+    }
+    return { score: 50, predicted_number: null, streak_length: streak };
+}}
+class ReversalDetector { analyze(nums) {
+    if (nums.length < 5) return { score: 50, predicted_number: null };
+    const ns = nums.slice(0, 10); let zz = 0;
+    for (let i = 1; i < ns.length - 1; i++) {
+        if ((ns[i] > ns[i-1] && ns[i] > ns[i+1]) || (ns[i] < ns[i-1] && ns[i] < ns[i+1])) zz++;
+    }
+    const ratio = zz / (ns.length - 2);
+    const direction = ns[0] > ns[1] ? "down" : "up";
+    const predicted = direction === "down" ? Math.min(9, ns[0] + 2) : Math.max(0, ns[0] - 2);
+    return { score: Math.min(85, Math.round(45 + ratio * 50)), predicted_number: predicted };
+}}
+class MomentumAnalyzer { analyze(nums) {
+    if (nums.length < 4) return { score: 50, predicted_number: null };
+    const recent = nums.slice(0, 5), prev = nums.slice(5, 10);
+    const ra = recent.reduce((a,b)=>a+b,0) / recent.length;
+    const pa = prev.length ? prev.reduce((a,b)=>a+b,0) / prev.length : ra;
+    const mom = ra - pa;
+    const nxt = Math.max(0, Math.min(9, Math.round(ra + mom * 0.5)));
+    return { score: Math.min(88, Math.round(50 + Math.abs(mom) * 8)), predicted_number: nxt, momentum: Math.round(mom * 1000) / 1000 };
+}}
+const HYBRID_WEIGHTS = { trend: 18, pattern: 16, frequency: 12, hot_cold: 10, big_small: 10, streak: 8, reversal: 8, momentum: 8 };
+
+function part3HybridAnalyze(results) {
+    const fallback = { prediction: "B", confidence: 75, numbers: [6,7], primary: 6, engine: "PART3-HYBRID v1 🤖", pattern: "", big_pct: 50.0, small_pct: 50.0, signal: "WEAK", patterns_hit: "Statistical Prob", composite: 50 };
+    if (!results || results.length < 10) return fallback;
+    const nums = [];
+    for (const r of results.slice(0, 10)) {
+        let v = r.number;
+        if (v === null || v === undefined) for (const f of ["result_number","num","value"]) { v = r[f]; if (v !== null && v !== undefined) break; }
+        if (v !== null && v !== undefined) {
+            try { const n = parseInt(v); if (!isNaN(n) && 0 <= n && n <= 9) nums.push(n); } catch(e) {}
+        }
+    }
+    if (nums.length < 10) return fallback;
+    const modules = {
+        trend: new TrendAnalyzer(), pattern: new PatternRecognizer(),
+        frequency: new FrequencyAnalyzer(), hot_cold: new HotColdAnalyzer(),
+        big_small: new BigSmallAnalyzer(), streak: new StreakDetector(),
+        reversal: new ReversalDetector(), momentum: new MomentumAnalyzer()
+    };
+    const moduleResults = {};
+    for (const [name, mod] of Object.entries(modules)) {
+        try { moduleResults[name] = mod.analyze(nums); }
+        catch (e) { console.warn("[PART3-HYBRID]", name, e.message); moduleResults[name] = { score: 50, predicted_number: null }; }
+    }
+    const totalWeight = Object.values(HYBRID_WEIGHTS).reduce((a,b)=>a+b,0);
+    const numberVotes = new Array(10).fill(0.0);
+    let composite = 0.0;
+    for (const [name, r] of Object.entries(moduleResults)) {
+        const w = HYBRID_WEIGHTS[name] || 5;
+        const s = Number(r.score || 50);
+        composite += s * w;
+        const num = r.predicted_number;
+        if (num !== null && num !== undefined && 0 <= num && num <= 9) numberVotes[num] += w * (s / 100);
+    }
+    composite /= totalWeight;
+    let predictedNumber = 0, pv = -1;
+    for (let i = 0; i < 10; i++) if (numberVotes[i] > pv) { pv = numberVotes[i]; predictedNumber = i; }
+    const bsResult = moduleResults.big_small || {};
+    const predictedSize = bsResult.predicted_size || (predictedNumber >= 5 ? "Big" : "Small");
+    const predBS = predictedSize === "Big" ? "B" : "S";
+    const sideNums = predBS === "B" ? [5,6,7,8,9] : [0,1,2,3,4];
+    const sideSorted = [...sideNums].sort((a,b) => numberVotes[b] - numberVotes[a]);
+    const primary = sideSorted[0], second = sideSorted[1] !== undefined ? sideSorted[1] : primary;
+    const confidence = Math.max(50, Math.min(99, Math.round(composite)));
+    let signal;
+    if (confidence >= 85) signal = "ULTRA STRONG";
+    else if (confidence >= 75) signal = "STRONG";
+    else if (confidence >= 65) signal = "MODERATE";
+    else if (confidence >= 55) signal = "WEAK";
+    else signal = "VERY WEAK";
+    const patternsHit = [];
+    if ((moduleResults.pattern || {}).matches > 0) patternsHit.push(`Pattern×${moduleResults.pattern.matches}`);
+    if ((moduleResults.streak || {}).streak_length >= 3) patternsHit.push("Streak");
+    if ((moduleResults.momentum || {}).momentum && Math.abs(moduleResults.momentum.momentum) > 1) patternsHit.push("Momentum");
+    const pattern = nums.slice(0, 9).map(n => n <= 4 ? "S" : "B").join("");
+    return {
+        prediction: predBS, confidence, numbers: [primary, second], primary,
+        engine: "PART3-HYBRID v1 🤖", pattern,
+        big_pct: bsResult.big_pct || 50.0, small_pct: bsResult.small_pct || 50.0,
+        signal, patterns_hit: patternsHit.length ? patternsHit.join(" | ") : "Statistical Prob",
+        composite: Math.round(composite * 100) / 100
+    };
+}
+
+// ============================================================
+// PART 4 — ENSEMBLE AI ENGINE (Markov + Weighted + Simple)
+// ============================================================
+const MAX_MARKOV_ORDER = 4, LOOKBACK4 = 30;
+
+function p4UpdateLearning(st, nums) {
+    const sizes = nums.map(n => n <= 4 ? "SMALL" : "BIG");
+    const digits = nums.map(n => String(n));
+    for (let i = 0; i < digits.length; i++) {
+        const d = digits[i], s = sizes[i];
+        if (!st.p4DigitStats[d]) st.p4DigitStats[d] = { BIG: 0, SMALL: 0 };
+        st.p4DigitStats[d][s]++;
+    }
+    for (let order = 2; order <= MAX_MARKOV_ORDER; order++) {
+        if (sizes.length < order + 1) continue;
+        for (let i = 0; i < sizes.length - order; i++) {
+            const key = sizes.slice(i, i + order).join("");
+            const nxt = sizes[i + order];
+            if (!st.p4Markov[key]) st.p4Markov[key] = {};
+            if (!st.p4Markov[key][nxt]) st.p4Markov[key][nxt] = { BIG: 0, SMALL: 0 };
+            st.p4Markov[key][nxt][nxt]++;
+        }
+    }
+}
+function p4WeightedAnalysis(nums) {
+    const recent = nums.slice(0, LOOKBACK4);
+    const sizes = recent.map(n => n <= 4 ? "SMALL" : "BIG");
+    const scores = { BIG: 0.0, SMALL: 0.0 };
+    const totalW = (sizes.length * (sizes.length + 1)) / 2;
+    const rev = [...sizes].reverse();
+    for (let i = 0; i < rev.length; i++) scores[rev[i]] += ((i + 1) / totalW) * 100;
+    if (sizes.length >= 3) {
+        let streak = 1;
+        for (let i = 1; i < sizes.length; i++) { if (sizes[i] === sizes[i-1]) streak++; else break; }
+        if (streak >= 3) {
+            const opp = sizes[0] === "BIG" ? "SMALL" : "BIG";
+            scores[opp] += 20;
+        }
+    }
+    const alts = sizes.slice(1).reduce((acc, v, i) => acc + (v !== sizes[i] ? 1 : 0), 0);
+    if (alts >= sizes.length * 0.7) {
+        const expected = sizes[0] === "BIG" ? "SMALL" : "BIG";
+        scores[expected] += 15;
+    }
+    const count = {};
+    nums.slice(0, LOOKBACK4).forEach(n => count[n] = (count[n] || 0) + 1);
+    const sorted = Object.keys(count).map(k => ({ n: Number(k), c: count[k] })).sort((a,b)=>b.c - a.c).slice(0, 4);
+    const hotBig = sorted.filter(d => d.n >= 5).length;
+    if (hotBig >= 3) scores["BIG"] += 12;
+    else if (hotBig <= 1) scores["SMALL"] += 12;
+    return scores;
+}
+function p4MarkovPredict(st, sizes) {
+    let bestPred = null, bestConf = 0;
+    for (let order = MAX_MARKOV_ORDER; order >= 2; order--) {
+        if (sizes.length < order) continue;
+        const key = sizes.slice(0, order).join("");
+        const stats = st.p4Markov[key] || {};
+        let total = 0;
+        for (const v of Object.values(stats)) total += (v.BIG || 0) + (v.SMALL || 0);
+        if (total < 4) continue;
+        let bigT = 0, smallT = 0;
+        for (const v of Object.values(stats)) { bigT += v.BIG || 0; smallT += v.SMALL || 0; }
+        const pred = bigT > smallT ? "BIG" : "SMALL";
+        const conf = Math.max(bigT, smallT) / total * 100;
+        if (conf > bestConf) { bestConf = conf; bestPred = pred; }
+    }
+    return { pred: bestPred, conf: Math.round(bestConf) };
+}
+function p4SimplePredict(nums) {
+    const recent = nums.slice(0, 20);
+    const bigCount = recent.filter(n => n >= 5).length;
+    const smallC = recent.length - bigCount;
+    const pred = bigCount > smallC ? "SMALL" : "BIG";
+    const conf = 60 + Math.abs(bigCount - smallC) * 3;
+    return { pred, conf: Math.min(90, conf) };
+}
+function part4EnsembleAnalyze(results, st) {
+    const fallback = { prediction: "S", confidence: 70, numbers: [2,3], primary: 2, engine: "PART4-ENSEMBLE v1 🎯", pattern: "", big_pct: 50.0, small_pct: 50.0 };
+    if (!results || results.length < 10) return fallback;
+    const nums = [];
+    for (const r of results.slice(0, 10)) {
+        let v = r.number;
+        if (v === null || v === undefined) for (const f of ["result_number","num","value"]) { v = r[f]; if (v !== null && v !== undefined) break; }
+        if (v !== null && v !== undefined) {
+            try { const n = parseInt(v); if (!isNaN(n) && 0 <= n && n <= 9) nums.push(n); } catch(e) {}
+        }
+    }
+    if (nums.length < 10) return fallback;
+    p4UpdateLearning(st, nums);
+    const sizes = nums.map(n => n <= 4 ? "SMALL" : "BIG");
+    const votes = { BIG: 0.0, SMALL: 0.0 };
+    const wScores = p4WeightedAnalysis(nums);
+    const wWinner = wScores.BIG >= wScores.SMALL ? "BIG" : "SMALL";
+    votes[wWinner] += Math.max(wScores.BIG, wScores.SMALL);
+    const { pred: mp, conf: mc } = p4MarkovPredict(st, sizes);
+    if (mp) votes[mp] += mc * 1.2;
+    const sp = p4SimplePredict(nums);
+    votes[sp.pred] += sp.conf * 0.6;
+    const finalPredStr = votes.BIG >= votes.SMALL ? "BIG" : "SMALL";
+    const predBS = finalPredStr === "BIG" ? "B" : "S";
+    const rawConf = Math.min(95, Math.round(votes[finalPredStr] * 0.9));
+    const confidence = Math.max(65, rawConf);
+    const sideNums = predBS === "B" ? [5,6,7,8,9] : [0,1,2,3,4];
+    const numFreq = {};
+    nums.slice(0, 30).forEach(n => numFreq[n] = (numFreq[n] || 0) + 1);
+    const sideSorted = [...sideNums].sort((a,b) => (numFreq[b] || 0) - (numFreq[a] || 0));
+    const primary = sideSorted[0], second = sideSorted[1] !== undefined ? sideSorted[1] : primary;
+    const recent10 = nums.slice(0, 10);
+    const bigC = recent10.filter(n => n >= 5).length;
+    const smallC = recent10.length - bigC;
+    const bigPct = Math.round(bigC / Math.max(recent10.length, 1) * 1000) / 10;
+    const smallPct = Math.round((100 - bigPct) * 10) / 10;
+    const pattern = nums.slice(0, 9).map(n => n <= 4 ? "S" : "B").join("");
+    return { prediction: predBS, confidence, numbers: [primary, second], primary, engine: "PART4-ENSEMBLE v1 🎯", pattern, big_pct: bigPct, small_pct: smallPct };
+}
+
+// ============================================================
+// PART 5 / PART 6 / PART 7 — SHORT ENGINES
+// ============================================================
+const PART5_RULES = { 1: "SAME", 2: "SAME", 3: "SAME", 4: "SAME", 5: "OPPOSITE", 6: "SAME", 7: "OPPOSITE", 8: "SAME", 9: "SAME", 10: "SAME", 11: "SAME", 12: "OPPOSITE", 13: "SAME", 14: "OPPOSITE" };
+const PART6_MAP = { 0: "S", 1: "B", 2: "S", 3: "S", 4: "B", 5: "S", 6: "B", 7: "S", 8: "B", 9: "S" };
+
+function part5LevelPredict(results, level) {
+    const nums = [];
+    for (const r of (results || []).slice(0, 10)) {
+        const v = r.number;
+        if (v !== null && v !== undefined && /^\d+$/.test(String(v))) {
+            const n = parseInt(v);
+            if (0 <= n && n <= 9) nums.push(n);
+        }
+    }
+    const latest = nums[0] || 0;
+    const base = isSmallJ(latest) ? "S" : "B";
+    const safeLevel = Math.max(1, Math.min(14, Number(level) || 1));
+    const rule = PART5_RULES[safeLevel] || "SAME";
+    const pred = rule === "SAME" ? base : (base === "S" ? "B" : "S");
+    const nums2 = pred === "B" ? [5,6] : [0,1];
+    return { prediction: pred, confidence: 75, numbers: nums2, primary: pred === "B" ? 5 : 0, engine: "PART5-LEVEL", level: safeLevel, rule, latest_num: latest };
+}
+function part6Analyze(results) {
+    const nums = [];
+    for (const r of (results || []).slice(0, 10)) {
+        const v = r.number;
+        if (v !== null && v !== undefined && /^\d+$/.test(String(v))) {
+            const n = parseInt(v);
+            if (0 <= n && n <= 9) nums.push(n);
+        }
+    }
+    const latest = nums[0] || 0;
+    const pred = PART6_MAP[latest];
+    return { prediction: pred, confidence: 75, numbers: pred === "B" ? [5,6] : [0,1], primary: pred === "B" ? 5 : 0, engine: "PART6-CUSTOM-MAP", latest_num: latest };
+}
+function part7Analyze(results) {
+    const nums = [];
+    for (const r of (results || []).slice(0, 10)) {
+        const v = r.number;
+        if (v !== null && v !== undefined && /^\d+$/.test(String(v))) {
+            const n = parseInt(v);
+            if (0 <= n && n <= 9) nums.push(n);
+        }
+    }
+    const last5 = nums.slice(0, 5);
+    const big = last5.filter(n => n >= 5).length;
+    const small = last5.length - big;
+    const pred = big >= small ? "B" : "S";
+    return { prediction: pred, confidence: last5.length === 5 ? 80 : 70, numbers: pred === "B" ? [5,6] : [0,1], primary: pred === "B" ? 5 : 0, engine: "PART7-LAST5-MAJORITY", last5, big_count: big, small_count: small };
+}
+
+// ============================================================
+// PART 8 — ERROR BOT V8 WALK-FORWARD ENGINE
+// ============================================================
+function p8Num(r) {
+    if (typeof r !== 'object' || !r) return null;
+    for (const k of ["number", "result_number", "num", "value"]) {
+        const v = r[k];
+        if (v !== null && v !== undefined) {
+            try { const n = parseInt(v); if (!isNaN(n) && 0 <= n && n <= 9) return n; } catch(e) {}
+        }
+    }
+    return null;
+}
+function p8History(hist) {
+    const out = [];
+    for (const r of (hist || []).slice(0, 10)) {
+        const n = p8Num(r);
+        if (n !== null) out.push(n >= 5 ? "BIG" : "SMALL");
+    }
+    return out;
+}
+function p8Clamp(x, a = -1.0, b = 1.0) { return Math.max(a, Math.min(b, Number(x))); }
+function p8Signed(b, s) {
+    const t = Math.abs(b) + Math.abs(s);
+    return t ? (b - s) / t : 0.0;
+}
+function p8Entropy(h) {
+    if (!h.length) return 1.0;
+    const b = h.filter(x => x === "BIG").length / h.length;
+    const sm = 1 - b;
+    const log2 = Math.log2;
+    return (-(b * (b ? log2(b) : 0))) + (-(sm * (sm ? log2(sm) : 0)));
+}
+function p8Run(h) {
+    if (!h.length) return { side: null, len: 0 };
+    let n = 1;
+    while (n < h.length && h[n] === h[0]) n++;
+    return { side: h[0], len: n };
+}
+function p8Balance(h, n) {
+    const a = h.slice(0, n);
+    const b = a.filter(x => x === "BIG").length;
+    const s = a.length - b;
+    return a.length ? p8Signed(b, s) : 0.0;
+}
+function p8Context(h, order) {
+    if (h.length <= order + 1) return { score: 0.0, b: 0, s: 0, count: 0 };
+    const key = h.slice(0, order).join("|");
+    let b = 0, s = 0, c = 0;
+    for (let i = order; i < h.length; i++) {
+        if (h.slice(i - order, i).join("|") !== key) continue;
+        const nxt = h[i - 1];
+        if (nxt === "BIG") b++; else s++;
+        c++;
+    }
+    return { score: p8Signed(b, s), b, s, count: c };
+}
+function p8WalkForward(h, order, minTrain = 18) {
+    if (h.length < minTrain + order + 3) return { acc: 0.5, samples: 0, edge: 0.0 };
+    let correct = 0, samples = 0;
+    for (let t = minTrain; t < h.length - order - 1; t++) {
+        const train = h.slice(t);
+        const key = h.slice(t - order, t).join("|");
+        let b = 0, s = 0;
+        for (let i = order; i < train.length; i++) {
+            if (train.slice(i - order, i).join("|") !== key) continue;
+            if (train[i - 1] === "BIG") b++; else s++;
+        }
+        if (b + s < 2) continue;
+        const pred = b >= s ? "BIG" : "SMALL";
+        const actual = h[t - 1];
+        if (pred === actual) correct++;
+        samples++;
+    }
+    const acc = samples ? correct / samples : 0.5;
+    return { acc, samples, edge: p8Clamp((acc - 0.5) * 2) };
+}
+function p8Backoff(h) {
+    let score = 0.0, totalW = 0.0, support = 0.0; const rows = [];
+    for (let order = 1; order <= 8; order++) {
+        const c = p8Context(h, order);
+        if (c.count < 2) continue;
+        const wf = p8WalkForward(h, order, 18);
+        const supportW = Math.min(1.0, c.count / 8);
+        const validationW = 0.55 + 0.45 * Math.max(0.0, wf.edge);
+        const orderW = 0.45 + 0.55 * (order / 8);
+        const w = supportW * validationW * orderW;
+        score += c.score * w; totalW += w; support += c.count * w;
+        rows.push({ order, count: c.count, score: c.score, wf: wf.acc, samples: wf.samples });
+    }
+    return { score: totalW ? score / totalW : 0.0, support, rows };
+}
+function p8PatternNext(row) {
+    for (const k of ["next", "nextOutcome", "next_outcome", "result", "outcome", "prediction"]) {
+        const v = row[k];
+        if (typeof v === 'string') {
+            const up = v.toUpperCase();
+            if (up === "BIG" || up === "SMALL") return up;
+        }
+    }
+    return null;
+}
+function p8PatternKey(pattern) {
+    return pattern.map(x => String(x).toUpperCase()).join("|");
+}
+function p8Reliability(row) {
+    try {
+        let r = Number(row.reliability !== undefined ? row.reliability : (row.accuracy || 0));
+        if (r > 1) r /= 100;
+        return p8Clamp(r, 0, 1);
+    } catch(e) { return 0.0; }
+}
+function p8PatternDatabase(h, st) {
+    let b = 0, s = 0, e = 0, best = 0.0; const names = [];
+    for (const length of [3,4,5,6,7,8,10]) {
+        if (h.length < length) continue;
+        const key = p8PatternKey(h.slice(0, length));
+        let lb = 0.0, ls = 0.0; let local = 0;
+        for (const row of (st.p8PatternDB || [])) {
+            const pattern = row.pattern;
+            if (!Array.isArray(pattern) || pattern.length < length) continue;
+            if (p8PatternKey(pattern.slice(0, length)) !== key) continue;
+            const nxt = p8PatternNext(row);
+            if (!nxt) continue;
+            const rel = p8Reliability(row);
+            let total;
+            try { total = Number(row.wins || 0) + Number(row.losses || 0); } catch(e) { total = 0; }
+            const sampleQuality = total >= 5 ? Math.min(1.0, total / 20) : 0.35;
+            const w = (0.15 + 0.85 * rel) * sampleQuality * (0.55 + length / 20);
+            if (nxt === "BIG") lb += w; else ls += w;
+            local++;
+            if (names.length < 8) names.push(`${row.id || '?'}:${nxt}@${length}`);
+        }
+        if (local) {
+            b += Math.min(3, lb); s += Math.min(3, ls); e += Math.min(6, lb + ls);
+            best = Math.max(best, Math.abs(p8Signed(lb, ls)));
+        }
+    }
+    return { score: p8Signed(b, s), evidence: e, b, s, best, names };
+}
+function p8Motif(h) {
+    let b = 0, s = 0, e = 0;
+    for (const length of [2,3,4]) {
+        if (h.length < length + 2) continue;
+        const key = h.slice(0, length);
+        for (let i = length; i < h.length; i++) {
+            const slice = h.slice(i - length, i);
+            if (slice.length !== key.length) continue;
+            if (!slice.every((v, idx) => v === key[idx])) continue;
+            const nxt = h[i - 1];
+            if (nxt === "BIG") b++; else s++;
+            e++;
+        }
+    }
+    return { score: e ? p8Signed(b, s) : 0.0, evidence: e };
+}
+function p8RunModel(h) {
+    const r = p8Run(h);
+    if (!r.len) return { score: 0.0, evidence: 0 };
+    let b = 0, s = 0, e = 0; let i = 1;
+    while (i < h.length - 1) {
+        let length = 1;
+        while (i + length < h.length && h[i + length] === h[i]) length++;
+        if (length === r.len) {
+            if (h[i - 1] === "BIG") b++; else s++;
+            e++;
+        }
+        i += Math.max(1, length);
+    }
+    return { score: e ? p8Signed(b, s) : 0.0, evidence: e };
+}
+function p8Regime(h) {
+    const sh = p8Balance(h, 6), md = p8Balance(h, 12), lg = p8Balance(h, 24);
+    const run = p8Run(h); const ent = p8Entropy(h.slice(0, 20));
+    let regime = "MIXED";
+    if (run.len >= 4) regime = "RUN";
+    else if (Math.abs(sh) >= 0.55 && (sh === 0 || md === 0 || (sh > 0) === (md > 0))) regime = "MOMENTUM";
+    else if (Math.abs(lg) >= 0.28 && (sh > 0) !== (lg > 0)) regime = "ROTATION";
+    else if (ent > 0.97) regime = "HIGH_ENTROPY";
+    return { short: sh, med: md, long: lg, run, entropy: ent, regime };
+}
+function part8Analyze(results, st) {
+    const h = p8History(results);
+    if (!h.length) return { prediction: "S", confidence: 51, numbers: [0,1], primary: 0, engine: "PART8-V8-WALK-FORWARD", pattern: "NO DATA", regime: "MIXED", support: 0 };
+    const mk = p8Backoff(h), db = p8PatternDatabase(h, st), motif = p8Motif(h), run = p8RunModel(h), reg = p8Regime(h);
+    let score = mk.score*0.50 + db.score*0.14 + motif.score*0.10 + run.score*0.08 + reg.short*0.08 + reg.med*0.06 + reg.long*0.04;
+    if (reg.regime === "HIGH_ENTROPY") score *= 0.72;
+    const signals = [mk.score, db.score, motif.score, run.score, reg.short, reg.med, reg.long].filter(x => Math.abs(x) > 0.08);
+    const agreement = signals.length ? signals.filter(x => (x >= 0) === (score >= 0)).length / signals.length : 0.5;
+    const support = mk.rows.reduce((a, r) => a + r.count, 0) + db.evidence + motif.evidence + run.evidence;
+    const margin = Math.min(1.0, Math.abs(score));
+    const strongest = mk.rows.length ? [...mk.rows].sort((a, b) => Math.abs(b.score) - Math.abs(a.score))[0] : null;
+    let side;
+    if (Math.abs(score) < 0.06 || support < 3) {
+        side = (strongest && Math.abs(strongest.score) >= 0.12 && strongest.score >= 0) || (!strongest && reg.short >= 0) ? "BIG" : "SMALL";
+    } else side = score >= 0 ? "BIG" : "SMALL";
+    let confidence = Math.round(50 + margin*20 + agreement*10 + Math.min(1.0, support/24)*12);
+    if (reg.regime === "HIGH_ENTROPY") confidence -= 8;
+    if (Math.abs(score) < 0.10) confidence -= 5;
+    confidence = Math.max(51, Math.min(86, confidence));
+    const nums = side === "BIG" ? [5,6,7,8,9] : [0,1,2,3,4];
+    const primary = nums[2], second = nums[1];
+    const parts = [strongest ? `CTX-${strongest.order}` : "BACKOFF", "WALK-FWD", reg.regime];
+    if (db.best >= 0.65) parts.push("DB-VALIDATED");
+    if (reg.run.len >= 3) parts.push("RUN-CHECK");
+    return {
+        prediction: side === "BIG" ? "B" : "S", confidence, numbers: [primary, second], primary,
+        engine: "PART8-V8-WALK-FORWARD", pattern: parts.join(" • "),
+        regime: reg.regime, entropy: reg.entropy, support,
+        context_score: mk.score, db_score: db.score, motif_score: motif.score,
+        run_score: run.score, agreement,
+        strongest_order: strongest ? strongest.order : 0,
+        walk_forward: strongest ? strongest.wf : 0.5,
+        pattern_votes: db.names.length, patterns: db.names.length ? db.names : ["LIVE CONTEXT"]
+    };
+}
+
+// ============================================================
+// PART 9 — 10×10 DETERMINISTIC LOOKUP TABLE
+// ============================================================
+const PART9_RULE = [
+    ["SKIP","SKIP","SMALL 1","SMALL 2","SMALL 3","SMALL 4","BIGBIG 5","BIGBIG 6","BIGBIG 7","BIGBIG 8"],
+    [null,"SKIP","SKIP","SMALL 1","SMALL 2","SMALL 3","SMALL 4","BIGBIG 5","BIGBIG 6","BIGBIG 7"],
+    ["BIGBIG 6","SKIP","SKIP","SKIP","SMALL 1","SMALL 2","SMALL 3","SMALL 4","BIGBIG 5","BIGBIG 6"],
+    ["BIGBIG 7","BIGBIG 8","SKIP","SKIP","SKIP","SMALL 1","SMALL 2","SMALL 3","SMALL 4","BIGBIG 5"],
+    ["BIGBIG 8","BIGBIG 7","BIGBIG 6","SKIP","SKIP","SKIP","SMALL 1","SMALL 2","SMALL 3","SMALL 4"],
+    ["BIGBIG 9","BIGBIG 8","BIGBIG 7","BIGBIG 6","SKIP","SKIP","SKIP","SMALL 1","SMALL 2","SMALL 3"],
+    ["SMALL 0","BIGBIG 9","BIGBIG 8","BIGBIG 7","BIGBIG 6","SKIP","SKIP","SKIP","SMALL 1","SMALL 2"],
+    ["SMALL 1","SMALL 0","BIGBIG 9","BIGBIG 8","BIGBIG 7","BIGBIG 6","SKIP","SKIP","SKIP","SMALL 1"],
+    ["SMALL 2","SMALL 1","SMALL 0","BIGBIG 9","BIGBIG 8","BIGBIG 7","BIGBIG 6","SKIP","SKIP","SKIP"],
+    ["SMALL 3","SMALL 2","SMALL 1","SMALL 0","BIGBIG 9","BIGBIG 8","BIGBIG 7","BIGBIG 6","SKIP","SKIP"]
+];
+function part9DeterministicAnalyze(results) {
+    if (!results || results.length < 2) {
+        return { prediction: "S", confidence: 50, numbers: [2,3], primary: 2, engine: "PART9-LOOKUP-TABLE 🎰", pattern: "INSUFFICIENT DATA", rule: "SKIP", level: 0 };
+    }
+    let lastResult, prevResult;
+    try {
+        lastResult = parseInt(results[0].number || results[0].result_number || 0);
+        prevResult = parseInt(results[1].number || results[1].result_number || 0);
+    } catch(e) {
+        return { prediction: "S", confidence: 50, numbers: [2,3], primary: 2, engine: "PART9-LOOKUP-TABLE 🎰", pattern: "EXTRACTION ERROR", rule: "SKIP", level: 0 };
+    }
+    lastResult = Math.max(0, Math.min(9, lastResult));
+    prevResult = Math.max(0, Math.min(9, prevResult));
+    let rule = PART9_RULE[prevResult][lastResult];
+    if (rule === null || rule === undefined) rule = "SKIP";
+    if (rule === "SKIP") {
+        return { prediction: "S", confidence: 40, numbers: [2,3], primary: 2, engine: "PART9-LOOKUP-TABLE 🎰", pattern: `SKIP (P:${prevResult} L:${lastResult})`, rule: "SKIP", level: 0 };
+    }
+    const parts = rule.split(" ");
+    if (parts.length < 2) {
+        return { prediction: "S", confidence: 50, numbers: [2,3], primary: 2, engine: "PART9-LOOKUP-TABLE 🎰", pattern: "PARSE ERROR", rule: "SKIP", level: 0 };
+    }
+    const predType = parts[0];
+    let confidenceLevel = parseInt(parts[1]);
+    if (isNaN(confidenceLevel)) confidenceLevel = 5;
+    let prediction, confidence, numbers;
+    if (predType === "SMALL") {
+        prediction = "S"; confidence = Math.min(99, 70 + confidenceLevel * 5); numbers = [2,3];
+    } else if (predType === "BIGBIG") {
+        prediction = "B"; confidence = Math.min(99, 70 + confidenceLevel * 5); numbers = [7,8];
+    } else {
+        return { prediction: "S", confidence: 50, numbers: [2,3], primary: 2, engine: "PART9-LOOKUP-TABLE 🎰", pattern: "UNKNOWN TYPE", rule: "SKIP", level: 0 };
+    }
+    return { prediction, confidence, numbers, primary: numbers[0], engine: "PART9-LOOKUP-TABLE 🎰", pattern: `Rule[${prevResult}][${lastResult}]=${rule}`, rule, level: confidenceLevel, prev_result: prevResult, last_result: lastResult };
+}
+
+// ============================================================
+// PART DISPATCHER & WIN CHECK
+// ============================================================
+function generatePartPrediction(part, results, st) {
+    if (part === 1) {
+        const buf = [];
+        for (const r of (results || []).slice(0, 9)) buf.unshift(parseInt(r.number || 0) || 0);
+        return masterAiV10(buf, st.level, st);
+    }
+    if (part === 2) return part2AiAnalyze(results);
+    if (part === 3) return part3HybridAnalyze(results);
+    if (part === 4) return part4EnsembleAnalyze(results, st);
+    if (part === 5) return part5LevelPredict(results, st.part5Level);
+    if (part === 6) return part6Analyze(results);
+    if (part === 7) return part7Analyze(results);
+    if (part === 8) return part8Analyze(results, st);
+    if (part === 9) return part9DeterministicAnalyze(results);
+    return part8Analyze(results, st);
+}
+
+function checkWinPart(part, resultNum, pred) {
+    const direct = (pred.prediction || "S").toUpperCase();
+    const actual = isSmallJ(resultNum) ? "S" : "B";
+    if (part === 1) {
+        const oppPred = direct === "B" ? "S" : "B";
+        const oppNums = oppPred === "S" ? [0,1,2,3,4] : [5,6,7,8,9];
+        return actual === oppPred || (pred.numbers && pred.numbers.length && oppNums.slice(0, 2).includes(resultNum));
+    }
+    if (direct === "BIG" || direct === "SMALL") {
+        const norm = direct === "BIG" ? "B" : "S";
+        return actual === norm || (pred.numbers && pred.numbers.slice(0, 2).includes(resultNum));
+    }
+    return actual === direct || (pred.numbers && pred.numbers.slice(0, 2).includes(resultNum));
+}
+
+// ============================================================
+// MAIN decidePrediction — uses 8-PART rotation system
+// ============================================================
+function decidePrediction(list, currentLevel, userId) {
+    if (!list || list.length < 3) return null;
+    const st = ensurePartState(userId);
+    // Map autobet L1-15 → st.level for Part1 engine (1,2,3)
+    const lvl = Number(currentLevel);
+    if (lvl >= 1 && lvl <= 5) st.level = 1;
+    else if (lvl >= 6 && lvl <= 10) st.level = 2;
+    else st.level = 3;
+
+    const currentPart = st.logicPart || 1;
+    const mlPart = selectBestPatternPart(st, currentPart);
+    if (mlPart !== currentPart) {
+        st.logicPart = mlPart;
+        st.switchReason = `ML pattern override -> P${mlPart}`;
+    }
+
+    const part = st.logicPart;
+    const eng = partEngine(st, part);
+
+    const resultsArr = [];
+    for (let i = 0; i < Math.min(10, list.length); i++) {
+        const n = getResultNum(list[i]);
+        if (n !== null) resultsArr.push({ number: n, issueNumber: list[i].issueNumber });
+    }
+    if (resultsArr.length < 3) return null;
+
+    st._lastResultsArr = resultsArr.slice(0, 10);
+    st._lastPartPreds = st._lastPartPreds || {};
+    for (let p = 1; p <= 8; p++) {
+        try {
+            const predP = generatePartPrediction(p, resultsArr, st);
+            st._lastPartPreds[p] = predP || null;
+        } catch (e) {
+            st._lastPartPreds[p] = null;
+        }
+    }
+
+    const rawPred = generatePartPrediction(part, resultsArr, st);
+    eng.curPred = rawPred;
+    st._lastPartPreds[part] = rawPred;
+
+    // Convert S/B to BIG/SMALL for bot.js signal system
+    let val = rawPred.prediction || "S";
+    if (val === "S") val = "SMALL";
+    else if (val === "B") val = "BIG";
+    else if (val === "SMALL" || val === "BIG") {}
+    else val = isSmallJ(rawPred.primary || 0) ? "SMALL" : "BIG";
+
+    const pe = partEngine(st, part);
+    const w = Number(pe.wins) || 0, l = Number(pe.losses) || 0;
+    const total = w + l;
+    const partStats = `P${part} W${w}/L${l}${total?` (${(100*w/total).toFixed(1)}% WR)`:""} | streak ${pe.lossCount||0}L`;
+    const switchLine = st.switchReason ? ` | ${st.switchReason}` : "";
+    const reason = `${rawPred.engine || 'PART'+part} | ${partStats}${switchLine}`;
+    const conf = Math.max(50, Math.min(99, Number(rawPred.confidence) || 75));
+
+    const signal = {
+        type: "SIZE",
+        val,
+        reason,
+        conf,
+        numbers: rawPred.numbers || [],
+        primary: rawPred.primary,
+        engine: rawPred.engine || ("PART" + part),
+        part,
+        rawPred
+    };
+
+    return signal;
+}
+
+// -------- PART STATE UPDATE (called after each result is known) --------
+// 8-PART PARALLEL INDEPENDENT STREAK ARCHITECTURE:
+// - EVERY period, ALL 8 parts (1..8) have their own prediction evaluated against the result digit.
+// - Each part tracks its own independent consecutive lossCount (streak).
+// - Active part only: gets the real bet, display, record. 7 inactive parts run SILENTLY in parallel.
+// - Any part (active OR inactive) that reaches LOSS_TRIGGER=6 consecutive losses TRIGGERS immediately → fast switch.
+// - Active part WIN: all 8 part lossCount reset to 0, switch immediately to P1.
+// - Triggered switch: switch to HIGHEST LOSS RATE part via selectBestPart, reset the triggered part's streak to 0.
+function updatePartStateAfterResult(userId, issueNumber, resultNum, won) {
+    const st = ensurePartState(userId);
+    const part = st.logicPart || 1;
+    const eng = partEngine(st, part);
+    const pred = eng.curPred || { prediction: "?", numbers: [] };
+
+    const partPreds = st._lastPartPreds || {};
+    st._lastPartPreds = {};
+    for (let p = 1; p <= 8; p++) {
+        const pe = partEngine(st, p);
+        const pp = partPreds[p] || pe.curPred || null;
+        if (!pp || pp.prediction === null || pp.prediction === undefined) continue;
+
+        const pWon = checkWinPart(p, resultNum, pp);
+        pe.hist.push({ issue: issueNumber, result: resultNum, pred: pp.prediction || "?", numbers: pp.numbers || [], primary: pp.primary || 0, engine: pp.engine || pe.name, won: !!pWon, parallel: p !== part });
+        if (pe.hist.length > 400) pe.hist.shift();
+
+        if (pWon) {
+            pe.wins++; pe._winStreak++;
+            if (pe._winStreak > pe.bestStreak) pe.bestStreak = pe._winStreak;
+            pe.lossCount = 0;
+            pe.active = false;
+        } else {
+            pe.losses++; pe._winStreak = 0;
+            pe.lossCount = (pe.lossCount || 0) + 1;
+            if (!pe.active && pe.lossCount >= LOSS_TRIGGER) pe.active = true;
+        }
+
+        if (p === part) pe.curPred = null;
+    }
+
+    recordEngineResult(eng, !!won, issueNumber, resultNum, pred);
+    st.hist.push({ issue: issueNumber, pred: pred.prediction, won: !!won, part: part });
+    if (st.hist.length > 100) st.hist.shift();
+
+    if (won) {
+        st.consecutiveLoss = 0;
+        st.streak = (st.streak || 0) + 1;
+        for (let p = 1; p <= 8; p++) {
+            const e = partEngine(st, p);
+            e.lossCount = 0;
+            e.curPred = null;
+            e.active = false;
+        }
+        if (part !== 1) {
+            st.switchReason = `WIN on P${part} → reset to P1 (master)`;
+            st.lastSwitchFrom = part;
+        } else {
+            st.switchReason = `WIN on P${part} (master)`;
+            st.lastSwitchFrom = part;
+        }
+        st.logicPart = 1;
+    } else {
+        st.consecutiveLoss++;
+        st.streak = 0;
+        eng.lossCount = (eng.lossCount || 0) + 1;
+
+        const patternPart = selectBestPatternPart(st, part);
+        const lowestPart = selectLowestStreakPart(st);
+        const nextPart = patternPart !== part ? patternPart : lowestPart;
+        const shouldSwitch = eng.lossCount >= LOSS_TRIGGER || (nextPart !== part && (partEngine(st, nextPart).lossCount || 0) <= (eng.lossCount || 0));
+
+        if (shouldSwitch) {
+            st.lastSwitchFrom = part;
+            st.switchReason = `ML best pattern -> P${nextPart} (win-rate override)`;
+            st.logicPart = nextPart;
+            eng.lossCount = 0;
+            const nextEng = partEngine(st, nextPart);
+            nextEng.active = true;
+            nextEng.curPred = null;
+        }
+    }
+
+    eng.curPred = null;
+}
 
 // ============================================================
 // 2. handleWin - UI & Stats
@@ -1075,6 +2168,9 @@ function decidePrediction(list, currentLevel, userId) {
 async function handleWin(userId, chatId, actual, num, betLevel) {
     const pt = profitTrack[userId];
     const cfg = autobetCfg[userId];
+    const st = userPartState[userId] || {};
+    const part = st.logicPart || 1;
+    const pe = (st.e1 && partEngine(st, part)) || null;
     const amt = getBetAmount(userId, betLevel);
     const profit = amt * 0.98;
     if (autobetState && autobetState[userId]) {
@@ -1086,12 +2182,20 @@ async function handleWin(userId, chatId, actual, num, betLevel) {
     pt.winStreak++; pt.lossStreak = 0;
     if(pt.winStreak > pt.maxW) pt.maxW = pt.winStreak;
 
+    let partLine = "Part   : P" + part;
+    if (pe) {
+        const w = Number(pe.wins)||0, l = Number(pe.losses)||0, t = w+l;
+        partLine = "Part   : P" + part + " (" + (pe.name || ("PART"+part)) + ") W" + w + "/L" + l + (t?` ${(100*w/t).toFixed(1)}%`:"");
+    }
+    if (st.switchReason) partLine += "\nSwitch : " + st.switchReason;
+
     await send(chatId,
 "╔══════════════════════════╗\n"+
 "║  ✅ WIN! 🎉              ║\n"+
 "╠══════════════════════════╣\n"+
 "║ Number : "+num+"\n"+
 "║ Result : "+actual+"\n"+
+"║ "+partLine+"\n"+
 "║ Profit : +₹"+profit.toFixed(2)+"\n"+
 "║ P&L    : "+(pt.pnl>=0?"+":"")+pt.pnl.toFixed(2)+"\n"+
 "║ Streak : "+pt.winStreak+" wins\n"+
@@ -1106,9 +2210,12 @@ async function handleWin(userId, chatId, actual, num, betLevel) {
 // 3. handleLoss - UI & Stats
 // ============================================================
 async function handleLoss(userId, chatId, actual, num, betLevel) {
-    const st = autobetState[userId];
+    const stAuto = autobetState[userId];
     const pt = profitTrack[userId];
     const cfg = autobetCfg[userId];
+    const st = userPartState[userId] || {};
+    const part = st.logicPart || 1;
+    const pe = (st.e1 && partEngine(st, part)) || null;
     const amt = getBetAmount(userId, betLevel);
     
     pt.totalBets++; pt.losses++; pt.pnl -= amt; 
@@ -1116,28 +2223,39 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
     pt.lossStreak++; pt.winStreak = 0;
     if(pt.lossStreak > pt.maxL) pt.maxL = pt.lossStreak;
 
-    if(st.level >= 15){
+    let partLine = "Part   : P" + part;
+    if (pe) {
+        const w = Number(pe.wins)||0, l = Number(pe.losses)||0, t = w+l;
+        partLine = "Part   : P" + part + " (" + (pe.name || ("PART"+part)) + ") W" + w + "/L" + l + (t?` ${(100*w/t).toFixed(1)}%`:"") + " | streak " + (pe.lossCount||0) + "L";
+    }
+    if (st.switchReason) partLine += "\nSwitch : " + st.switchReason;
+
+    if(stAuto.level >= 15){
         await send(chatId,
 "╔══════════════════════════╗\n"+
 "║  🛑 L15 LOSS — BOT STOPPED ║\n"+
 "╠══════════════════════════╣\n"+
+"║ Number : "+num+"\n"+
+"║ Result : "+actual+"\n"+
+"║ "+partLine+"\n"+
 "║ Loss   : -₹"+amt+"\n"+
 "║ P&L    : "+(pt.pnl>=0?"+":"")+pt.pnl.toFixed(2)+"\n"+
 "║ Status : AutoBet stopped.\n"+
 "╚══════════════════════════╝"
         );
     } else if(betLevel < (cfg.maxLvl || 15)){
-        const next = getBetAmount(userId, st.level);
+        const next = getBetAmount(userId, stAuto.level);
         await send(chatId,
 "╔══════════════════════════╗\n"+
 "║  ❌ LOSS                 ║\n"+
 "╠══════════════════════════╣\n"+
 "║ Number : "+num+"\n"+
 "║ Result : "+actual+"\n"+
+"║ "+partLine+"\n"+
 "║ Loss   : -₹"+amt+"\n"+
 "║ P&L    : "+(pt.pnl>=0?"+":"")+pt.pnl.toFixed(2)+"\n"+
 "╠══════════════════════════╣\n"+
-"║ Next L"+st.level+" : ₹"+next+"\n"+
+"║ Next L"+stAuto.level+" : ₹"+next+"\n"+
 "╚══════════════════════════╝"
         );
     } else {
@@ -1145,6 +2263,9 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
 "╔══════════════════════════╗\n"+
 "║  💀 MAX LEVEL LOSS       ║\n"+
 "╠══════════════════════════╣\n"+
+"║ Number : "+num+"\n"+
+"║ Result : "+actual+"\n"+
+"║ "+partLine+"\n"+
 "║ Loss   : -₹"+amt+"\n"+
 "║ P&L    : "+(pt.pnl>=0?"+":"")+pt.pnl.toFixed(2)+"\n"+
 "║ Reset  : L1 | Watch 0/"+cfg.watchLoss+"\n"+
@@ -1187,6 +2308,10 @@ async function runPredict(userId, chatId) {
 
     const signal = decidePrediction(list, st.level, userId);
     if (!signal) return setTimeout(() => runPredict(userId, chatId), 5000);
+
+    // Store prediction (before checking if it wins/loses)
+    const periodNumber = next;
+    savePredictionResult(userId, periodNumber, signal.val, null, null, st.level, signal.conf || 50, signal.reason, signal.type || "SIZE", signal.part || 0);
 
     const waitingDueToLevel = st.waitingAction === 'watch';
 
@@ -1270,11 +2395,21 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
 
         const win = predicted === actual;
         const betLevel = st.level;
+        const curPart = (userPartState[userId] && userPartState[userId].logicPart) || 0;
 
-        // Update level on loss
+        if (win) st.consecutiveLoss = 0;
+        else st.consecutiveLoss++;
+        if (st.consecutiveLoss > 999) st.consecutiveLoss = 999;
+
+        // Store prediction result
+        savePredictionResult(userId, target, predicted, actual, win, betLevel, 75, "PREDICTION_CHECK", predType, curPart);
+
+        // Update level on loss / win using user-side historical accuracy + ML model
         if (betPlaced && !win) {
             const nextLevel = getNextLevel(betLevel, cfg.maxLvl);
-            st.level = nextLevel;
+            const adaptiveLevel = getAdaptiveAccuracyLevel(userId, nextLevel, cfg.maxLvl);
+            const mlLevel = getMlLevelRecommendation(userId, adaptiveLevel, cfg.maxLvl);
+            st.level = mlLevel;
             if (st.level >= 15) {
                 running[userId] = false;
                 await send(chatId, "🛑 L15 loss reached — AutoBet stopped.");
@@ -1282,6 +2417,10 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         } else if (betPlaced && win) {
             st.level = 1;
         }
+
+        try {
+            updatePartStateAfterResult(userId, target, num, win);
+        } catch (e) { console.error("[PART-STATE-UPDATE]", e.message); }
 
         const s = stats[userId];
         s.total++;
@@ -1436,8 +2575,43 @@ const autobetMenu={keyboard:[
     ["💰 Set Base Bet","📈 Set Max Level"],
     ["🎯 Set Profit Target", "⏳ Set Section Delay"],
     ["🔢 Set Watch Losses","📊 AutoBet Status"],
-    ["📝 Set Custom Bets","🔙 Back"]
+    ["📝 Set Custom Bets","📊 Part Stats","🔙 Back"]
 ],resize_keyboard:true};
+
+function partStatsFor(userId) {
+    const st = ensurePartState(userId);
+    const active = st.logicPart || 1;
+    const lines = [];
+    lines.push("╔════════════════════════════════╗");
+    lines.push("║      📊 ALL PART STATS         ║");
+    lines.push("╠════════════════════════════════╣");
+    lines.push("║ Active : P" + active + " (" + (partEngine(st, active).name || "PART"+active) + ")");
+    if (st.switchReason) lines.push("║ Switch : " + st.switchReason);
+    lines.push("╠════════════════════════════════╣");
+    let totalW = 0, totalL = 0;
+    const rows = [];
+    for (let p = 1; p <= 8; p++) {
+        const e = partEngine(st, p);
+        const w = Number(e.wins)||0, l = Number(e.losses)||0, t = w+l;
+        totalW += w; totalL += l;
+        const lr = (100*((l+1)/(w+l+2))).toFixed(0);
+        const wr = t ? (100*w/t).toFixed(1) : "0.0";
+        const mark = (p === active) ? "◀" : " ";
+        rows.push("║ P"+p+" "+mark+" │ W"+w+" L"+l+" │ WR "+wr+"% │ LR~"+lr+"% │ BS "+(e.bestStreak||0)+" │ s"+(e.lossCount||0));
+    }
+    rows.forEach(r => lines.push(r));
+    lines.push("╠════════════════════════════════╣");
+    const ttl = totalW + totalL;
+    const twr = ttl ? ((100*totalW/ttl).toFixed(1)) : "0.0";
+    lines.push("║ TOTAL  │ W"+totalW+" L"+totalL+" ("+ttl+") WR "+twr+"%");
+    lines.push("╚════════════════════════════════╝");
+    return lines.join("\n");
+}
+async function partStats(chatId, userId) {
+    initUser(userId);
+    const text = partStatsFor(userId);
+    await send(chatId, text);
+}
 
 // ============================================================
 //  BOT INIT
@@ -1555,6 +2729,55 @@ function addHandlers(){
         if(!isAdmin(id))return send(id,"Not admin.");
         if(pass===adminPasswords[id]){adminLoggedIn[id]=true;send(id,"✅ Admin Login!",{reply_markup:userMenu(id)});}
         else send(id,"❌ Wrong!");
+    });
+
+    bot.onText(/\/predstats/,(msg)=>{
+        const id=msg.from.id;
+        if(!hasAccess(id))return send(id,"❌ No access.");
+        initUser(id);
+        
+        const stats = getPredictionStats(id);
+        let report = "📊 PREDICTION STATISTICS\n\n";
+        report += `📈 Overall\n`;
+        report += `  Total: ${stats.overall.total}\n`;
+        report += `  Wins: ${stats.overall.wins}\n`;
+        report += `  Losses: ${stats.overall.losses}\n`;
+        report += `  Accuracy: ${stats.overall.accuracy}%\n\n`;
+        
+        report += `🎯 By Level\n`;
+        Object.keys(stats.byLevel).sort((a,b)=>Number(a)-Number(b)).forEach(level=>{
+            const s = stats.byLevel[level];
+            report += `  L${level}: ${s.wins}W/${s.losses}L (${s.accuracy}%)\n`;
+        });
+        
+        report += `\n🎲 By Type\n`;
+        Object.keys(stats.byType).forEach(type=>{
+            const s = stats.byType[type];
+            report += `  ${type}: ${s.wins}W/${s.losses}L (${s.accuracy}%)\n`;
+        });
+        
+        send(id, report);
+    });
+
+    bot.onText(/\/history/,(msg)=>{
+        const id=msg.from.id;
+        if(!hasAccess(id))return send(id,"❌ No access.");
+        initUser(id);
+        
+        const storage = ensurePredictionStorage(id);
+        const recent = storage.results.slice(-10).reverse();
+        
+        if(recent.length === 0) return send(id, "📋 No prediction history yet.");
+        
+        let report = "📋 LAST 10 PREDICTIONS\n\n";
+        recent.forEach((r, i)=>{
+            const icon = r.won ? "✅" : "❌";
+            report += `${i+1}. ${icon} Issue: ${r.issue}\n`;
+            report += `   Pred: ${r.predicted} | Result: ${r.actual || "pending"}\n`;
+            report += `   L${r.level} | Conf: ${r.confidence}%\n\n`;
+        });
+        
+        send(id, report);
     });
 
     bot.on("message",async msg=>{
@@ -1748,6 +2971,7 @@ if(text==="🔢 Set Watch Losses"){
 
         // --- IMPORTANT: AWAIT ADDED ---
         if(text==="📊 AutoBet Status") return await autobetStatus(msg.chat.id,id);
+        if(text==="📊 Part Stats") return await partStats(msg.chat.id,id);
 
         if(text==="🔙 Back")return await send(id,"Main Menu",{reply_markup:userMenu(id)});
 
@@ -1773,10 +2997,11 @@ if(text==="🔢 Set Watch Losses"){
                 isWaiting:false,
                 nextStartTime:null
             };
+            resetPartState(id);
 
             const cfg=autobetCfg[id];
             await send(msg.chat.id,
-"🚀 ENGINE ON!\n\nAutoBet: "+(cfg.enabled?"✅ ON":"❌ OFF")+"\nWatch  : "+(cfg.watch?"ON ("+cfg.watchLoss+"L)":"OFF")+"\nBase   : ₹"+cfg.baseBet+" | MaxLvl: "+cfg.maxLvl+"\n\n💡 Using Mirror & Special Rules"
+"🚀 ENGINE ON!\n\nAutoBet: "+(cfg.enabled?"✅ ON":"❌ OFF")+"\nWatch  : "+(cfg.watch?"ON ("+cfg.watchLoss+"L)":"OFF")+"\nBase   : ₹"+cfg.baseBet+" | MaxLvl: "+cfg.maxLvl+"\n\n💡 Using 8-PART MASTERMIND ULTRA v10 ENGINE (Part1 → Part8 on 6 losses)"
             );
             runPredict(id,msg.chat.id);
         }
@@ -1788,6 +3013,7 @@ if(text==="🔢 Set Watch Losses"){
             delete autobetState[id];
             delete stats[id];
             delete profitTrack[id];
+            delete userPartState[id];
             if (global.gc) global.gc(); // Trigger GC if available
         }
         if(text==="📊 Stats")  showStats(msg.chat.id,id);
