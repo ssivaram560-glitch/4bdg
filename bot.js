@@ -908,7 +908,27 @@ function decidePrediction(list, currentLevel, userId) {
         };
     }
 
-    // L7-L15: Current system logic (pattern-based)
+    // L7: Opposite of latest result
+    if (lvl === 7) {
+        return {
+            type: "SIZE",
+            val: opposite(r1Size),
+            reason: "L7_OPPOSITE_OF_LATEST",
+            conf: 100
+        };
+    }
+
+    // L8: Same as latest result
+    if (lvl === 8) {
+        return {
+            type: "SIZE",
+            val: r1Size,
+            reason: "L8_SAME_AS_LATEST",
+            conf: 100
+        };
+    }
+
+    // L9-L15: Current system logic (pattern-based)
     let prediction = null;
 
     // STEP 1: Mirror Pattern (R3 == R1) - HIGHEST PRIORITY
