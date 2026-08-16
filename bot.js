@@ -8,7 +8,7 @@ const fs          = require('fs');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAFwn5xGl2EITfol8lVih61_oZe_jnEd478"
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAHQgFT32JdvP2ELvgBvgl-xof35DeGOxxI"
 const OWNER_ID     = 1865939951;
 const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
@@ -199,8 +199,22 @@ let autobetState   = {};
 let profitTrack    = {};
 let GLOBAL_TOKEN   = "";
 let userTokens = {}; 
+let userTimers = {};
 
+function trackUserTimer(userId, timerId) {
+    if (!userId) return timerId;
+    if (!userTimers[userId]) userTimers[userId] = new Set();
+    userTimers[userId].add(timerId);
+    return timerId;
+}
 
+function clearUserTimers(userId) {
+    if (!userId || !userTimers[userId]) return;
+    for (const timerId of userTimers[userId]) {
+        clearTimeout(timerId);
+    }
+    delete userTimers[userId];
+}
 
 // ============================================================
 //  LOGGING HELPER (New)
@@ -2291,12 +2305,16 @@ async function runPredict(userId, chatId) {
             profitTrack[userId].pnl = 0;
             await send(chatId, "🔄 Timed Restart! Starting new section...");
         } else {
-            return setTimeout(() => runPredict(userId, chatId), 30000);
+            return trackUserTimer(userId, setTimeout(() => {
+                if (running[userId]) runPredict(userId, chatId);
+            }, 30000));
         }
     }
 
     const list = await fetchList();
-    if (!list) return setTimeout(() => runPredict(userId, chatId), 15000);
+    if (!list) return trackUserTimer(userId, setTimeout(() => {
+        if (running[userId]) runPredict(userId, chatId);
+    }, 15000));
 
     const next = (BigInt(list[0].issueNumber) + 1n).toString();
     if (sentPeriods[userId].has(next)) return setTimeout(() => runPredict(userId, chatId), 2000);
@@ -2307,7 +2325,9 @@ async function runPredict(userId, chatId) {
     }
 
     const signal = decidePrediction(list, st.level, userId);
-    if (!signal) return setTimeout(() => runPredict(userId, chatId), 5000);
+    if (!signal) return trackUserTimer(userId, setTimeout(() => {
+        if (running[userId]) runPredict(userId, chatId);
+    }, 5000));
 
     // Store prediction (before checking if it wins/loses)
     const periodNumber = next;
@@ -2404,12 +2424,10 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         // Store prediction result
         savePredictionResult(userId, target, predicted, actual, win, betLevel, 75, "PREDICTION_CHECK", predType, curPart);
 
-        // Update level on loss / win using user-side historical accuracy + ML model
+        // Martingale progression: every loss advances to the next level.
+        // Do not override it with adaptive/ML logic, which can reduce the bet after a loss.
         if (betPlaced && !win) {
-            const nextLevel = getNextLevel(betLevel, cfg.maxLvl);
-            const adaptiveLevel = getAdaptiveAccuracyLevel(userId, nextLevel, cfg.maxLvl);
-            const mlLevel = getMlLevelRecommendation(userId, adaptiveLevel, cfg.maxLvl);
-            st.level = mlLevel;
+            st.level = getNextLevel(betLevel, cfg.maxLvl);
             if (st.level >= 15) {
                 running[userId] = false;
                 await send(chatId, "🛑 L15 loss reached — AutoBet stopped.");
@@ -2468,9 +2486,9 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
             }
         }
 
-        setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 8000);
+        trackUserTimer(userId, setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 8000));
     };
-    setTimeout(poll, 10000);
+    trackUserTimer(userId, setTimeout(poll, 10000));
 }
 
 // ============================================================
@@ -3007,6 +3025,9 @@ if(text==="🔢 Set Watch Losses"){
         }
         if(text==="🛑 Stop")   {
             running[id]=false;
+            clearUserTimers(id);
+            autobetCfg[id] = autobetCfg[id] || {};
+            autobetCfg[id].enabled = false;
             send(msg.chat.id,"🛑 Stopped.");
             // Aggressive memory cleanup
             delete sentPeriods[id];
