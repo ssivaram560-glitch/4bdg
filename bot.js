@@ -876,15 +876,39 @@ function decidePrediction(list, currentLevel, userId) {
     const r2Size = getSize(r2Num);
     const r3Size = getSize(r3Num);
 
-    if (Number(currentLevel) <= 3) {
+    const lvl = Number(currentLevel);
+
+    // L1-L4: Same as latest result
+    if (lvl >= 1 && lvl <= 4) {
         return {
             type: "SIZE",
             val: r1Size,
-            reason: "L1_L3_SAME_AS_LATEST",
+            reason: "L1_L4_SAME_AS_LATEST",
             conf: 100
         };
     }
 
+    // L5: Opposite of latest result
+    if (lvl === 5) {
+        return {
+            type: "SIZE",
+            val: opposite(r1Size),
+            reason: "L5_OPPOSITE_OF_LATEST",
+            conf: 100
+        };
+    }
+
+    // L6: Same as latest result
+    if (lvl === 6) {
+        return {
+            type: "SIZE",
+            val: r1Size,
+            reason: "L6_SAME_AS_LATEST",
+            conf: 100
+        };
+    }
+
+    // L7-L15: Current system logic (pattern-based)
     let prediction = null;
 
     // STEP 1: Mirror Pattern (R3 == R1) - HIGHEST PRIORITY
