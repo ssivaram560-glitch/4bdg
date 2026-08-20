@@ -873,15 +873,44 @@ function updateCombinedAfterResult(userId, sizeWon, numberWon, betPlaced) {
 }
 
 function pickOneEachSide(list) {
-    const big = [5,6,7,8,9];
-    const small = [0,1,2,3,4];
+    const big = [5, 6, 7, 8, 9];
+    const small = [0, 1, 2, 3, 4];
     const counts = Object.fromEntries([...big, ...small].map(n => [n, 0]));
     for (const item of (Array.isArray(list) ? list : [])) {
         const n = Number.parseInt(item?.number ?? item?.winNumber ?? -1, 10);
         if (Object.prototype.hasOwnProperty.call(counts, n)) counts[n]++;
     }
-    const choose = pool => pool.slice().sort((a,b) => counts[a]-counts[b] || a-b)[0];
+    const choose = pool => pool.slice().sort((a, b) => counts[a] - counts[b] || a - b)[0];
     return { big: choose(big), small: choose(small) };
+}
+
+function validDigit(value) {
+    const n = Number.parseInt(value, 10);
+    return Number.isInteger(n) && n >= 0 && n <= 9 ? n : null;
+}
+
+function chooseOppositeNumber(prediction, list, siteNumbers = []) {
+    const pool = prediction === "BIG" ? [0, 1, 2, 3, 4] : [5, 6, 7, 8, 9];
+    if (prediction !== "BIG" && prediction !== "SMALL") {
+        throw new Error("Prediction must be BIG or SMALL");
+    }
+    // Site numbers are [smallNumber, bigNumber]. Pick only the number
+    // opposite to the predicted side: BIG -> small number; SMALL -> big number.
+    const siteCandidate = validDigit(prediction === "BIG" ? siteNumbers[0] : siteNumbers[1]);
+    if (siteCandidate !== null && pool.includes(siteCandidate)) return siteCandidate;
+    const counts = Object.fromEntries(pool.map(n => [n, 0]));
+    for (const item of (Array.isArray(list) ? list : [])) {
+        const n = validDigit(item?.number ?? item?.winNumber);
+        if (n !== null && Object.prototype.hasOwnProperty.call(counts, n)) counts[n]++;
+    }
+    return pool.slice().sort((a, b) => counts[a] - counts[b] || a - b)[0];
+}
+
+function buildTwoBets(prediction, list, siteNumbers = []) {
+    return [
+        { type: "SIZE", val: prediction, kind: "size" },
+        { type: "NUMBER", val: chooseOppositeNumber(prediction, list, siteNumbers), kind: "number" }
+    ];
 }
 
 function isThreeResultSkip(list) {
@@ -980,19 +1009,21 @@ function decidePrediction(list, currentLevel, userId) {
     }
     if (state.skipCooldown > 0) state.skipCooldown = 0;
     if (betMode === "NUMBER") {
-        return { type: "NUMBER", val: 5, conf: 100, pat: formulaMode + "_NUMBER",
-            bets: [{ type: "NUMBER", val: 5, kind: "number" }] };
+        const siteNums = Array.isArray(latestSitePrediction?.numbers) && latestSitePrediction.numbers.length === 2
+            ? latestSitePrediction.numbers
+            : [engine.numbers.small, engine.numbers.big];
+        const numberBet = buildTwoBets(prediction, list, siteNums)[1];
+        return { type: "NUMBER", val: numberBet.val, conf: 85,
+            pat: formulaMode + "_OPPOSITE_NUMBER", bets: [numberBet] };
     }
     if (betMode === "COMBINED") {
         const siteNums = Array.isArray(latestSitePrediction?.numbers) && latestSitePrediction.numbers.length === 2
             ? latestSitePrediction.numbers
             : [engine.numbers.small, engine.numbers.big];
-        return { type: "COMBINED", val: prediction, conf: 85, pat: formulaMode + "_COMBINED",
-            bets: [
-                { type: "SIZE", val: prediction, kind: "size" },
-                { type: "NUMBER", val: siteNums[0], kind: "number" },
-                { type: "NUMBER", val: siteNums[1], kind: "number" }
-            ] };
+        // Exactly two bets per period: prediction side + one opposite-side number.
+        return { type: "COMBINED", val: prediction, conf: 85,
+            pat: formulaMode + "_COMBINED_OPPOSITE_NUMBER",
+            bets: buildTwoBets(prediction, list, siteNums) };
     }
     return { type: "SIZE", val: prediction, conf: 85, pat: formulaMode,
         bets: [{ type: "SIZE", val: prediction, kind: "size" }] };
@@ -1233,7 +1264,7 @@ async function runPredict(userId, chatId) {
 "║ Period  : "+next.slice(-6)+"\n"+
 "║ Mode    : "+modeLabel(cfg.mode)+"\n"+
 "║ Signal  : "+(signal.type==="NUMBER"?"🔢 NUMBER "+signal.val:(signal.val==="COMBINED"?"🔀 "+signal.val:""+(signal.val==="BIG"?"🔵 BIG":"🟠 SMALL")))+"\n"+
-(cfg.mode==="COMBINED" ? "║ Numbers : Small "+signal.bets.find(b=>b.type==="NUMBER" && Number(b.val)<=4)?.val+" | Big "+signal.bets.find(b=>b.type==="NUMBER" && Number(b.val)>=5)?.val+"\n" : "")+
+(cfg.mode==="COMBINED" ? "║ Opposite Number : "+signal.bets.find(b=>b.type==="NUMBER")?.val+"\n" : "")+
 "║ Pattern : "+patternName+"\n"+
 "╠══════════════════════════╣\n"+
 "║ "+abLine+"\n"+
