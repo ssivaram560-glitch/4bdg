@@ -548,7 +548,7 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
     resultCheckTimers.set(timerKey, iv);
 }
 
-module.exports = { decidePrediction, updateAfterResult, getStatus, initState, buildBSFromList, runPredict, checkResult };
+module.exports = { fetchLuciferPrediction, analyzeLuciferHistory, updateAfterResult, getStatus, initState, buildBSFromList, runPredict, checkResult };
 
 function showStats(chatId,userId){
     const d=stats[userId],rate=d.total?((d.win/d.total)*100).toFixed(1):"0.0";
