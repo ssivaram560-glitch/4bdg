@@ -548,6 +548,90 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
     resultCheckTimers.set(timerKey, iv);
 }
 
+
+// Lucifer API prediction analyzer.
+function normalizeLuciferItem(item) {
+    const issueNumber = String(item?.issueNumber ?? item?.issue ?? item?.period ?? '').trim();
+    const rawSize = String(item?.size ?? item?.bigSmall ?? item?.result ?? '').trim().toUpperCase();
+    const n = Number(item?.number ?? item?.winNumber ?? item?.digit);
+    const size = rawSize === 'BIG' || rawSize === 'SMALL'
+        ? rawSize
+        : Number.isInteger(n) && n >= 0 && n <= 9 ? (n >= 5 ? 'BIG' : 'SMALL') : null;
+    if (!/^\d{8,}$/.test(issueNumber) || !size) return null;
+    return { issueNumber, size, number: Number.isInteger(n) ? n : null, raw: item };
+}
+
+function oppositeSize(size) {
+    return size === 'BIG' ? 'SMALL' : size === 'SMALL' ? 'BIG' : null;
+}
+
+function analyzeLuciferHistory(items) {
+    const history = (Array.isArray(items) ? items : [])
+        .map(normalizeLuciferItem).filter(Boolean)
+        .sort((a,b) => BigInt(b.issueNumber) > BigInt(a.issueNumber) ? 1 : -1);
+    if (history.length < 3) return null;
+
+    const latest = history[0];
+    const target = (BigInt(latest.issueNumber) + 1n).toString().padStart(latest.issueNumber.length, '0');
+    let same = 0, opposite = 0;
+    const pairs = [];
+
+    // For current 03, history[0]=02 and history[1]=01 are completed.
+    // Analyze the two-period pairs requested by the user: 01/03 is not
+    // allowed because 03 is the target; therefore use completed pairs at
+    // the same two-step distance: 01/03 is excluded and 02/01 is the first
+    // valid adjacent completed pair. The target itself is never included.
+    for (let i=0; i < history.length - 1; i++) {
+        const newer = history[i];
+        const older = history[i + 1];
+        const relation = newer.size === older.size ? 'SAME' : 'OPPOSITE';
+        if (relation === 'SAME') same++; else opposite++;
+        pairs.push({ newer: newer.issueNumber, older: older.issueNumber, relation });
+    }
+
+    if (same === opposite) return null;
+    const mode = same > opposite ? 'SAME' : 'OPPOSITE';
+    const anchor = history[1];
+    const prediction = mode === 'SAME' ? anchor.size : oppositeSize(anchor.size);
+    if (!prediction) return null;
+    return {
+        issueNumber: target, val: prediction, type: 'SIZE', size: prediction,
+        latestCompleted: latest, anchorResult: anchor,
+        analysis: { same, opposite, mode, analyzedRecords: history.length, pairs },
+        conf: Math.round(Math.max(same, opposite) * 100 / (same + opposite)),
+        pat: `LUCIFER_${mode}`, source: LUCIFER_API,
+        bets: [{ type: 'SIZE', val: prediction, kind: 'size' }]
+    };
+}
+
+let luciferApiInFlight = null;
+async function fetchLuciferPrediction() {
+    if (luciferApiInFlight) return luciferApiInFlight;
+    luciferApiInFlight = (async () => {
+        try {
+            const response = await axios.get(LUCIFER_API, {
+                headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' },
+                timeout: 10000,
+                validateStatus: status => status >= 200 && status < 300
+            });
+            const body = response?.data;
+            const records = Array.isArray(body) ? body : body?.data;
+            const signal = analyzeLuciferHistory(records);
+            if (!signal) {
+                console.warn('[LUCIFER] No usable signal; skipping current period.');
+                return null;
+            }
+            return signal;
+        } catch (error) {
+            console.warn('[LUCIFER] API read failed; skipping:', error?.message || error);
+            return null;
+        } finally {
+            luciferApiInFlight = null;
+        }
+    })();
+    return luciferApiInFlight;
+}
+
 module.exports = { fetchLuciferPrediction, analyzeLuciferHistory, updateAfterResult, getStatus, initState, buildBSFromList, runPredict, checkResult };
 
 function showStats(chatId,userId){
