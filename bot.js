@@ -667,8 +667,10 @@ function decidePrediction(list) {
     const target = nextIssueNumber(list);
     if (!target) return null;
     const chronological = [...list].sort((a, b) => BigInt(a.issueNumber) < BigInt(b.issueNumber) ? -1 : 1);
-    // Analyze the last 10 completed rows, producing pairs 909/911 through 916/918 in the sample.
-    const analysisRows = chronological.slice(-10);
+    // Analyze the complete valid Lucifer API history. The newest completed row
+    // is excluded as the direct prediction source; the reference is the row
+    // immediately before it, matching the requested 917 -> 919 flow.
+    const analysisRows = chronological;
     const reference = analysisRows[analysisRows.length - 2];
     const pairs = [];
     for (let i = 0; i + 2 < analysisRows.length; i++) {
@@ -688,7 +690,8 @@ function decidePrediction(list) {
         type: "SIZE",
         val: predictedSize === "B" ? "BIG" : "SMALL",
         mode: dominantMode,
-        history: analysisRows.map(sizeOf).join(""),
+        history: analysisRows.slice(-20).map(sizeOf).join(""),
+        analyzedRows: analysisRows.length,
         targetPeriod: target,
         latestCompletedPeriod: latest.issueNumber,
         latestCompletedSize: sizeOf(latest),
@@ -696,7 +699,7 @@ function decidePrediction(list) {
         referenceSize,
         sameCount, oppositeCount, pairCount: pairs.length,
         lastPair: pairs[pairs.length - 1],
-        analysis: { sameCount, oppositeCount, pairCount: pairs.length, pairs: pairs.slice(-20) },
+        analysis: { sameCount, oppositeCount, pairCount: pairs.length, pairs },
         predictionDetails: { rule: dominantMode === "SAME" ? "same as reference result" : "opposite of reference result", tieBreak: tie ? "latest pair" : null }
     };
 }
