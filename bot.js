@@ -573,6 +573,77 @@ async function placeBet(userId, chatId, period, prediction, predType, level) {
 
 // ============================================================
 // ============================================================
+// ============================================================
+//  STATE AND HISTORY HELPERS
+// ============================================================
+function initState(userId) {
+    initUser(userId);
+    if (!userStates[userId]) {
+        userStates[userId] = { resultHistory: [], skipCount: 0, currentMode: null, lastPrediction: null };
+    }
+    const state = userStates[userId];
+    if (!Array.isArray(state.resultHistory)) state.resultHistory = [];
+    if (typeof state.skipCount !== "number") state.skipCount = 0;
+    if (state.currentMode === undefined) state.currentMode = null;
+    if (state.lastPrediction === undefined) state.lastPrediction = null;
+}
+
+function buildBSFromList(list, count = 15) {
+    if (!Array.isArray(list)) return [];
+    return list.slice(0, count).map(row => sizeOf(row) || (Number(row.number) >= 5 ? "B" : "S")).reverse();
+}
+
+function updateAfterResult(userId, wasWin, actualSize, betPlaced) {
+    initState(userId);
+    const state = userStates[userId];
+    const st = autobetState[userId];
+    const cfg = autobetCfg[userId];
+    const bs = actualSize === "BIG" || actualSize === "B" ? "B" : "S";
+    state.resultHistory.push(bs);
+    if (state.resultHistory.length > 50) state.resultHistory.shift();
+
+    if (!betPlaced) {
+        if (cfg.watch) {
+            if (wasWin) {
+                st.consecutiveLoss = 0;
+                st.level = 1;
+                st.inMart = false;
+            } else {
+                st.consecutiveLoss++;
+                if (st.consecutiveLoss >= Math.max(1, Number(cfg.watchLoss) || 1)) {
+                    st.inMart = true;
+                    st.level = 1;
+                }
+            }
+        }
+        return;
+    }
+
+    if (wasWin) {
+        st.consecutiveLoss = 0;
+        st.level = 1;
+        st.inMart = false;
+        state.skipCount = 0;
+    } else {
+        st.consecutiveLoss++;
+        st.inMart = true;
+        st.level++;
+        if (st.level > Math.max(1, Number(cfg.maxLvl) || 1)) {
+            st.level = 1;
+            st.consecutiveLoss = 0;
+            st.inMart = false;
+        }
+        if ([3, 5, 7].includes(st.consecutiveLoss)) state.skipCount = Math.max(state.skipCount, 5);
+    }
+}
+
+function getStatus(userId) {
+    initState(userId);
+    const state = userStates[userId];
+    const st = autobetState[userId];
+    return `${state.currentMode || "SAME"} MODE | L${st?.level || 1} | History: ${state.resultHistory.join("")}`;
+}
+
 //  SAME / OPPOSITE PREDICTION ENGINE
 // ============================================================
 function normalizeSize(value) {
