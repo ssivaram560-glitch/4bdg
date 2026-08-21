@@ -8,7 +8,7 @@ const puppeteer   = require('puppeteer');
 //  CONFIG
 // ============================================================
 // WARNING: These credentials were shared in chat and should be rotated after deployment.
-const BOT_TOKEN    = "8801907570:AAGfHiS5fg9joWuxHCPXew-IsfPIJhEtwQE";
+const BOT_TOKEN    = "8801907570:AAEKiqWpwx0xGRxSOgEs7azx_yQcRERxmw4";
 const OWNER_ID     = 8869874751;
 const OWNER_PASS   = "2004";
 const ADMIN_HANDLE = "@Sivakutty1";
