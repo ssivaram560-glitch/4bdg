@@ -8,9 +8,9 @@ const puppeteer   = require('puppeteer');
 //  CONFIG
 // ============================================================
 // WARNING: These credentials were shared in chat and should be rotated after deployment.
-const BOT_TOKEN    = "8687914335:AAEYJ87rtDyqs_4HpFvkOnkU8O9oiEy8PmE";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8687914335:AAEYJ87rtDyqs_4HpFvkOnkU8O9oiEy8PmE";
 const OWNER_ID     = 8869874751;
-const OWNER_PASS   = "2004";
+const OWNER_PASS   = process.env.OWNER_PASS || "2004";
 const ADMIN_HANDLE = "@Sivakutty1";
 const REG_LINK     = "https://bdgwinuu.com/#/register?invitationCode=7442815992780";
 const WIN_STICKER  = "CAACAgUAAxkBAAFHUGNp4JX1-ohP4uBEWpfNptaz-HmwVgAC4hgAAhboKVbObuGuTcMs2zsE";
