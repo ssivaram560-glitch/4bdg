@@ -672,6 +672,16 @@ async function fetchLuciferPrediction() {
     return luciferApiInFlight;
 }
 
+function buildBSFromList(list, count = 15) {
+    if (!Array.isArray(list)) return [];
+    return list.slice(0, count).map(item => {
+        const size = String(item?.size ?? item?.bigSmall ?? '').toUpperCase();
+        if (size === 'BIG' || size === 'SMALL') return size;
+        const n = Number(item?.number ?? item?.winNumber ?? item?.digit);
+        return Number.isInteger(n) && n >= 0 && n <= 9 ? (n >= 5 ? 'BIG' : 'SMALL') : null;
+    }).filter(Boolean);
+}
+
 module.exports = { fetchLuciferPrediction, analyzeLuciferHistory, updateAfterResult, getStatus, initState, buildBSFromList, runPredict, checkResult };
 
 function showStats(chatId,userId){
