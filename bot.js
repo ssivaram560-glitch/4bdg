@@ -52,6 +52,7 @@ let adminLoggedIn  = {};
 let usersAccess    = {};
 let keyStore       = {};
 let stats          = {};
+let userStates     = {};
 let running        = {};
 let sentPeriods    = {};
 let ownerState     = null;
@@ -69,6 +70,45 @@ const resultCheckInFlight = new Set();
 const runInFlight = new Set();
 const loginInFlight = new Map();
 const MAX_SENT_PERIODS = 6;
+
+function initState(userId) {
+    const id = String(userId);
+    if (!userStates[id]) {
+        userStates[id] = {
+            mode: "NORMAL", pendingPrediction: true, forcedModeQueue: [],
+            historyModes: [], periodCounter: 0, normalWinsIn20: 0,
+            recoveryWinsIn20: 0, lastPredictionWasLoss: false,
+            consecutivePatternLoss: 0, skipCooldown: 0,
+            resultHistory: [], lastLuciferPrediction: null
+        };
+    } else {
+        const state = userStates[id];
+        if (!Array.isArray(state.historyModes)) state.historyModes = [];
+        if (!Array.isArray(state.forcedModeQueue)) state.forcedModeQueue = [];
+        if (!Number.isInteger(state.periodCounter)) state.periodCounter = 0;
+        if (!Number.isInteger(state.normalWinsIn20)) state.normalWinsIn20 = 0;
+        if (!Number.isInteger(state.recoveryWinsIn20)) state.recoveryWinsIn20 = 0;
+        if (typeof state.lastPredictionWasLoss !== "boolean") state.lastPredictionWasLoss = false;
+        if (!Number.isInteger(state.consecutivePatternLoss)) state.consecutivePatternLoss = 0;
+        if (!Number.isInteger(state.skipCooldown)) state.skipCooldown = 0;
+        if (!Array.isArray(state.resultHistory)) state.resultHistory = [];
+    }
+    return userStates[id];
+}
+
+function initUser(id) {
+    const key = String(id);
+    if (!stats[key]) stats[key] = { total:0, win:0, loss:0, lossStreak:0, winStreak:0, maxWinStreak:0, maxLossStreak:0, levelWins:{}, sizeLevelWins:{}, numberLevelWins:{} };
+    initState(key);
+    if (!sentPeriods[key]) sentPeriods[key] = new Set();
+    if (!autobetCfg[key]) autobetCfg[key] = { watch:false, watchLoss:2, baseBet:1, maxLvl:5, enabled:false, mode:"SIZE", customBets:[1,3,9,27,81], customSizeBets:[1,2,4,8,16], customNumberBets:[1,9,81,729,6561], targetProfit:1000, restartDelay:1 };
+    if (!["SIZE","NUMBER","COMBINED"].includes(autobetCfg[key].mode)) autobetCfg[key].mode = "SIZE";
+    if (!Array.isArray(autobetCfg[key].customBets) || !autobetCfg[key].customBets.length) autobetCfg[key].customBets = [1,3,9,27,81];
+    if (!Array.isArray(autobetCfg[key].customSizeBets) || !autobetCfg[key].customSizeBets.length) autobetCfg[key].customSizeBets = [1,2,4,8,16];
+    if (!Array.isArray(autobetCfg[key].customNumberBets) || !autobetCfg[key].customNumberBets.length) autobetCfg[key].customNumberBets = [1,9,81,729,6561];
+    if (!autobetState[key]) autobetState[key] = { level:1, sizeLevel:1, numberLevel:1, consecutiveLoss:0, inMart:false, lastWinLevel:null, lastWinMode:null, isWaiting:false, nextStartTime:null, levelHistory:{}, sizeLevelHistory:{}, numberLevelHistory:{} };
+    if (!profitTrack[key]) profitTrack[key] = { totalBets:0, wins:0, losses:0, pnl:0, winStreak:0, lossStreak:0, maxW:0, maxL:0, totalBetAmount:0 };
+}
 
 function clearUserTimers(userId) {
     const key = String(userId);
