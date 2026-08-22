@@ -682,10 +682,41 @@ function decidePrediction(list) {
     if (!pairs.length) return null;
     const sameCount = pairs.filter(p => p.mode === "SAME").length;
     const oppositeCount = pairs.filter(p => p.mode === "OPPOSITE").length;
-    const tie = sameCount === oppositeCount;
-    // Requested rule: choose the less frequent mode.
-    // When counts tie, use the newest pair as the deterministic fallback.
-    const predictionMode = tie ? pairs[pairs.length - 1].mode : (sameCount < oppositeCount ? "SAME" : "OPPOSITE");
+
+    // Convert pair modes to S/O and inspect the latest two-pair pattern.
+    // Examples: SS, SO, OS, OO.
+    const modeSequence = pairs.map(pair => pair.mode === "SAME" ? "S" : "O");
+    const latestPattern = modeSequence.length >= 2 ? modeSequence.slice(-2).join("") : null;
+    const patternCounts = { SS: 0, SO: 0, OS: 0, OO: 0 };
+    for (let i = 0; i + 1 < modeSequence.length; i++) {
+        const pattern = modeSequence.slice(i, i + 2).join("");
+        if (patternCounts[pattern] !== undefined) patternCounts[pattern]++;
+    }
+
+    // For the latest pattern, count what mode followed it in the full history.
+    // The less frequent next mode is selected, preserving the earlier rule.
+    let followingSame = 0;
+    let followingOpposite = 0;
+    if (latestPattern) {
+        for (let i = 0; i + 2 < modeSequence.length; i++) {
+            if (modeSequence.slice(i, i + 2).join("") === latestPattern) {
+                if (modeSequence[i + 2] === "S") followingSame++;
+                else followingOpposite++;
+            }
+        }
+    }
+
+    const globalTie = sameCount === oppositeCount;
+    const patternTie = followingSame === followingOpposite;
+    let predictionMode;
+    if (followingSame + followingOpposite > 0 && !patternTie) {
+        predictionMode = followingSame < followingOpposite ? "SAME" : "OPPOSITE";
+    } else {
+        // If the pattern has no known continuation or continuation is tied,
+        // use the less frequent full-history mode; latest pair breaks a tie.
+        predictionMode = globalTie ? pairs[pairs.length - 1].mode : (sameCount < oppositeCount ? "SAME" : "OPPOSITE");
+    }
+
     const referenceSize = sizeOf(reference);
     const predictedSize = predictionMode === "SAME" ? referenceSize : (referenceSize === "B" ? "S" : "B");
     return {
@@ -700,9 +731,18 @@ function decidePrediction(list) {
         referencePeriod: reference.issueNumber,
         referenceSize,
         sameCount, oppositeCount, pairCount: pairs.length,
+        latestPattern,
+        patternCounts,
+        followingSame,
+        followingOpposite,
         lastPair: pairs[pairs.length - 1],
-        analysis: { sameCount, oppositeCount, pairCount: pairs.length, pairs },
-        predictionDetails: { rule: predictionMode === "SAME" ? "same as reference result" : "opposite of reference result", tieBreak: tie ? "latest pair" : null, selection: tie ? "tie fallback" : "less frequent mode" }
+        analysis: { sameCount, oppositeCount, pairCount: pairs.length, pairs, modeSequence },
+        predictionDetails: {
+            rule: predictionMode === "SAME" ? "same as reference result" : "opposite of reference result",
+            patternRule: latestPattern ? `latest ${latestPattern} pattern continuation` : "no two-pair pattern",
+            selection: followingSame + followingOpposite > 0 && !patternTie ? "less frequent continuation" : "full-history fallback",
+            tieBreak: patternTie ? "full-history minority mode or latest pair" : null
+        }
     };
 }
 //  PREDICT LOOP
