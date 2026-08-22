@@ -683,13 +683,15 @@ function decidePrediction(list) {
     const sameCount = pairs.filter(p => p.mode === "SAME").length;
     const oppositeCount = pairs.filter(p => p.mode === "OPPOSITE").length;
     const tie = sameCount === oppositeCount;
-    const dominantMode = tie ? pairs[pairs.length - 1].mode : (sameCount > oppositeCount ? "SAME" : "OPPOSITE");
+    // Requested rule: choose the less frequent mode.
+    // When counts tie, use the newest pair as the deterministic fallback.
+    const predictionMode = tie ? pairs[pairs.length - 1].mode : (sameCount < oppositeCount ? "SAME" : "OPPOSITE");
     const referenceSize = sizeOf(reference);
-    const predictedSize = dominantMode === "SAME" ? referenceSize : (referenceSize === "B" ? "S" : "B");
+    const predictedSize = predictionMode === "SAME" ? referenceSize : (referenceSize === "B" ? "S" : "B");
     return {
         type: "SIZE",
         val: predictedSize === "B" ? "BIG" : "SMALL",
-        mode: dominantMode,
+        mode: predictionMode,
         history: analysisRows.slice(-20).map(sizeOf).join(""),
         analyzedRows: analysisRows.length,
         targetPeriod: target,
@@ -700,7 +702,7 @@ function decidePrediction(list) {
         sameCount, oppositeCount, pairCount: pairs.length,
         lastPair: pairs[pairs.length - 1],
         analysis: { sameCount, oppositeCount, pairCount: pairs.length, pairs },
-        predictionDetails: { rule: dominantMode === "SAME" ? "same as reference result" : "opposite of reference result", tieBreak: tie ? "latest pair" : null }
+        predictionDetails: { rule: predictionMode === "SAME" ? "same as reference result" : "opposite of reference result", tieBreak: tie ? "latest pair" : null, selection: tie ? "tie fallback" : "less frequent mode" }
     };
 }
 //  PREDICT LOOP
