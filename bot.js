@@ -807,6 +807,8 @@ async function runPredict(userId, chatId) {
     if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
     if (!state.currentMode) state.currentMode = signal.mode;
     state.lastPrediction = signal.val;
+    // Snapshot the level used for this prediction before any result update.
+    const predictionLevel = Math.max(1, Number(st.level) || 1);
 
     let abLine = "🤖 AutoBet: OFF";
     let canBet = false;
@@ -854,7 +856,7 @@ async function runPredict(userId, chatId) {
         }
     }
 
-    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced, signal.mode);
+    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced, signal.mode, predictionLevel);
 }
 // ============================================================
 //  RESULT CHECKER
@@ -862,7 +864,7 @@ async function runPredict(userId, chatId) {
 
 
 // 4. checkResult - Robust Update & Full UI
-async function checkResult(userId, chatId, target, predicted, predType, betPlaced, usedMode) {
+async function checkResult(userId, chatId, target, predicted, predType, betPlaced, usedMode, predictionLevel) {
     let tries = 0;
     const cfg = autobetCfg[userId];
     const st = autobetState[userId];
@@ -887,18 +889,21 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         else actual = num === 0 ? "RED" : num === 5 ? "GREEN" : num % 2 === 0 ? "RED" : "GREEN";
         
         const win = predicted === actual;
-        const betLevel = st.level; // Save current level before update
+        // Use the level shown with this prediction, even when AutoBet is OFF or the bet fails.
+        const betLevel = Math.max(1, Number(predictionLevel) || Number(st.level) || 1);
 
         // Keep the mode after a win; switch SAME <-> OPPOSITE after a loss.
         updateAfterResult(userId, win, actual, betPlaced, usedMode);
 
         const s = stats[userId];
         s.total++;
-        if (betPlaced) {
-            if (!s.levelStats[betLevel]) s.levelStats[betLevel] = { wins: 0, losses: 0 };
-            if (win) s.levelStats[betLevel].wins++;
-            else s.levelStats[betLevel].losses++;
-        }
+        // Count every resolved prediction by its displayed level. This is
+        // intentionally independent of betPlaced, so normal predictions,
+        // watch predictions, and failed bets are all included.
+        if (!s.levelStats[betLevel]) s.levelStats[betLevel] = { predictions: 0, wins: 0, losses: 0 };
+        s.levelStats[betLevel].predictions++;
+        if (win) s.levelStats[betLevel].wins++;
+        else s.levelStats[betLevel].losses++;
         if (win) {
             s.win++; s.winStreak++; s.lossStreak = 0;
             if (s.winStreak > s.maxWinStreak) s.maxWinStreak = s.winStreak;
@@ -958,13 +963,15 @@ function showStats(chatId,userId){
     initUser(userId);
     const d=stats[userId], rate=d.total?((d.win/d.total)*100).toFixed(1):"0.0";
     const bar="🟦".repeat(d.total?Math.round(d.win/d.total*10):0)+"⬜".repeat(d.total?10-Math.round(d.win/d.total*10):10);
-    const configuredLevels = Number(autobetCfg[userId]?.maxLvl) || 1;
     const observedLevels = Object.keys(d.levelStats || {}).map(Number).filter(Number.isFinite);
-    const maxLevel = Math.max(configuredLevels, observedLevels.length ? Math.max(...observedLevels) : 1);
+    const maxLevel = observedLevels.length ? Math.max(...observedLevels) : 1;
     const levelLines = [];
     for (let level = 1; level <= maxLevel; level++) {
-        const x = d.levelStats[level] || { wins: 0, losses: 0 };
-        levelLines.push(`L${level}: ${x.wins}W / ${x.losses}L`);
+        const x = d.levelStats[level] || { predictions: 0, wins: 0, losses: 0 };
+        const wins = Number(x.wins) || 0;
+        const losses = Number(x.losses) || 0;
+        const predictions = Number(x.predictions) || (wins + losses);
+        levelLines.push(`L${level}: ${wins}W / ${losses}L (${predictions} predictions)`);
     }
     send(chatId,
         "📊 STATS\n\n"+
