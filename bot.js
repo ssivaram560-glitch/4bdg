@@ -604,43 +604,27 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
     state.resultHistory.push(bs);
     if (state.resultHistory.length > 50) state.resultHistory.shift();
 
-    // Keep the winning mode; switch SAME <-> OPPOSITE after a loss.
-    if (usedMode === "SAME" || usedMode === "OPPOSITE") {
-        state.currentMode = wasWin ? usedMode : (usedMode === "SAME" ? "OPPOSITE" : "SAME");
-    }
-
-    if (!betPlaced) {
-        if (cfg.watch) {
-            if (wasWin) {
-                st.consecutiveLoss = 0;
-                st.level = 1;
-                st.inMart = false;
-            } else {
-                st.consecutiveLoss++;
-                if (st.consecutiveLoss >= Math.max(1, Number(cfg.watchLoss) || 1)) {
-                    st.inMart = true;
-                    st.level = 1;
-                }
-            }
-        }
+    // A win keeps the current mode and level unchanged.
+    if (wasWin) {
+        st.consecutiveLoss = 0;
+        st.inMart = false;
+        state.skipCount = 0;
         return;
     }
 
-    if (wasWin) {
+    // Every prediction loss is counted, whether or not a bet was placed.
+    st.consecutiveLoss = (Number(st.consecutiveLoss) || 0) + 1;
+    st.inMart = true;
+
+    // Change mode and advance one level only after TWO consecutive losses.
+    if (st.consecutiveLoss >= 2) {
         st.consecutiveLoss = 0;
-        st.level = 1;
-        st.inMart = false;
-        state.skipCount = 0;
-    } else {
-        st.consecutiveLoss++;
-        st.inMart = true;
-        st.level++;
-        if (st.level > Math.max(1, Number(cfg.maxLvl) || 1)) {
-            st.level = 1;
-            st.consecutiveLoss = 0;
-            st.inMart = false;
+        if (usedMode === "SAME" || usedMode === "OPPOSITE") {
+            state.currentMode = usedMode === "SAME" ? "OPPOSITE" : "SAME";
         }
-        if ([3, 5, 7].includes(st.consecutiveLoss)) state.skipCount = Math.max(state.skipCount, 5);
+
+        const maxLevel = Math.max(1, Number(cfg.maxLvl) || 1);
+        st.level = Math.min((Number(st.level) || 1) + 1, maxLevel);
     }
 }
 
