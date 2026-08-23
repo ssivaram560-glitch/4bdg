@@ -158,7 +158,8 @@ async function getLiveBalance(userId, chatId = null) {
 }
 
 function initUser(id) {
-    if (!stats[id])        stats[id]        = { total:0,win:0,loss:0,lossStreak:0,winStreak:0,maxWinStreak:0,maxLossStreak:0 };
+    if (!stats[id])        stats[id]        = { total:0,win:0,loss:0,lossStreak:0,winStreak:0,maxWinStreak:0,maxLossStreak:0,levelStats:{} };
+    if (!stats[id].levelStats || typeof stats[id].levelStats !== "object") stats[id].levelStats = {};
    if (!userStates[id])   userStates[id]   = { resultHistory:[], skipCount:0, currentMode:null, lastPrediction:null };
     if (!sentPeriods[id])  sentPeriods[id]  = new Set();
     if (!autobetCfg[id])   autobetCfg[id]   = { 
@@ -586,6 +587,7 @@ function initState(userId) {
     if (typeof state.skipCount !== "number") state.skipCount = 0;
     if (state.currentMode === undefined) state.currentMode = null;
     if (state.lastPrediction === undefined) state.lastPrediction = null;
+    if (state.currentMode !== "SAME" && state.currentMode !== "OPPOSITE") state.currentMode = null;
 }
 
 function buildBSFromList(list, count = 15) {
@@ -593,7 +595,7 @@ function buildBSFromList(list, count = 15) {
     return list.slice(0, count).map(row => sizeOf(row) || (Number(row.number) >= 5 ? "B" : "S")).reverse();
 }
 
-function updateAfterResult(userId, wasWin, actualSize, betPlaced) {
+function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
     initState(userId);
     const state = userStates[userId];
     const st = autobetState[userId];
@@ -601,6 +603,11 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced) {
     const bs = actualSize === "BIG" || actualSize === "B" ? "B" : "S";
     state.resultHistory.push(bs);
     if (state.resultHistory.length > 50) state.resultHistory.shift();
+
+    // Keep the winning mode; switch SAME <-> OPPOSITE after a loss.
+    if (usedMode === "SAME" || usedMode === "OPPOSITE") {
+        state.currentMode = wasWin ? usedMode : (usedMode === "SAME" ? "OPPOSITE" : "SAME");
+    }
 
     if (!betPlaced) {
         if (cfg.watch) {
@@ -661,7 +668,7 @@ function nextIssueNumber(list) {
     return (BigInt(list[0].issueNumber) + 1n).toString();
 }
 
-function decidePrediction(list) {
+function decidePrediction(list, lockedMode = null) {
     if (!Array.isArray(list) || list.length < 3) return null;
     const latest = list[0];
     const target = nextIssueNumber(list);
@@ -709,12 +716,15 @@ function decidePrediction(list) {
     const globalTie = sameCount === oppositeCount;
     const patternTie = followingSame === followingOpposite;
     let predictionMode;
-    if (followingSame + followingOpposite > 0 && !patternTie) {
-        predictionMode = followingSame < followingOpposite ? "SAME" : "OPPOSITE";
+    if (lockedMode === "SAME" || lockedMode === "OPPOSITE") {
+        // Keep the active mode after a win; it changes only after a loss.
+        predictionMode = lockedMode;
+    } else if (!globalTie) {
+        // First prediction: choose the mode with the higher historical count.
+        predictionMode = sameCount > oppositeCount ? "SAME" : "OPPOSITE";
     } else {
-        // If the pattern has no known continuation or continuation is tied,
-        // use the less frequent full-history mode; latest pair breaks a tie.
-        predictionMode = globalTie ? pairs[pairs.length - 1].mode : (sameCount < oppositeCount ? "SAME" : "OPPOSITE");
+        // Deterministic tie-break when both modes have the same count.
+        predictionMode = pairs[pairs.length - 1].mode;
     }
 
     const referenceSize = sizeOf(reference);
@@ -793,8 +803,10 @@ async function runPredict(userId, chatId) {
     if(sentPeriods[userId].has(next)) return setTimeout(()=>runPredict(userId,chatId), 2000);
     sentPeriods[userId].add(next);
 
-    const signal = decidePrediction(list);
+    const signal = decidePrediction(list, state.currentMode);
     if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
+    if (!state.currentMode) state.currentMode = signal.mode;
+    state.lastPrediction = signal.val;
 
     let abLine = "🤖 AutoBet: OFF";
     let canBet = false;
@@ -842,7 +854,7 @@ async function runPredict(userId, chatId) {
         }
     }
 
-    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced);
+    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced, signal.mode);
 }
 // ============================================================
 //  RESULT CHECKER
@@ -850,7 +862,7 @@ async function runPredict(userId, chatId) {
 
 
 // 4. checkResult - Robust Update & Full UI
-async function checkResult(userId, chatId, target, predicted, predType, betPlaced) {
+async function checkResult(userId, chatId, target, predicted, predType, betPlaced, usedMode) {
     let tries = 0;
     const cfg = autobetCfg[userId];
     const st = autobetState[userId];
@@ -877,11 +889,16 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         const win = predicted === actual;
         const betLevel = st.level; // Save current level before update
 
-        // UPDATE LOGIC (Passing betPlaced to fix L1 repetition)
-        updateAfterResult(userId, win, actual, betPlaced);
+        // Keep the mode after a win; switch SAME <-> OPPOSITE after a loss.
+        updateAfterResult(userId, win, actual, betPlaced, usedMode);
 
         const s = stats[userId];
         s.total++;
+        if (betPlaced) {
+            if (!s.levelStats[betLevel]) s.levelStats[betLevel] = { wins: 0, losses: 0 };
+            if (win) s.levelStats[betLevel].wins++;
+            else s.levelStats[betLevel].losses++;
+        }
         if (win) {
             s.win++; s.winStreak++; s.lossStreak = 0;
             if (s.winStreak > s.maxWinStreak) s.maxWinStreak = s.winStreak;
@@ -938,9 +955,24 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
 //  STATS
 // ============================================================
 function showStats(chatId,userId){
-    const d=stats[userId],rate=d.total?((d.win/d.total)*100).toFixed(1):"0.0";
+    initUser(userId);
+    const d=stats[userId], rate=d.total?((d.win/d.total)*100).toFixed(1):"0.0";
     const bar="🟦".repeat(d.total?Math.round(d.win/d.total*10):0)+"⬜".repeat(d.total?10-Math.round(d.win/d.total*10):10);
-    send(chatId,"📊 STATS\n\nTotal: "+d.total+"\nWins: "+d.win+"\nLosses: "+d.loss+"\nAcc: "+rate+"%\n"+bar+"\n\nBest Win: "+d.maxWinStreak+" streak\nWorst Loss: "+d.maxLossStreak+" streak");
+    const configuredLevels = Number(autobetCfg[userId]?.maxLvl) || 1;
+    const observedLevels = Object.keys(d.levelStats || {}).map(Number).filter(Number.isFinite);
+    const maxLevel = Math.max(configuredLevels, observedLevels.length ? Math.max(...observedLevels) : 1);
+    const levelLines = [];
+    for (let level = 1; level <= maxLevel; level++) {
+        const x = d.levelStats[level] || { wins: 0, losses: 0 };
+        levelLines.push(`L${level}: ${x.wins}W / ${x.losses}L`);
+    }
+    send(chatId,
+        "📊 STATS\n\n"+
+        "Total: "+d.total+"\nWins: "+d.win+"\nLosses: "+d.loss+"\nAcc: "+rate+"%\n"+bar+"\n\n"+
+        "🏆 LEVEL WINS\n"+levelLines.join("\n")+"\n\n"+
+        "Current Mode: "+(userStates[userId]?.currentMode || "L1 START")+"\n"+
+        "Best Win: "+d.maxWinStreak+" streak\nWorst Loss: "+d.maxLossStreak+" streak"
+    );
 }
 async function profitReport(chatId,userId){
     initUser(userId);
@@ -1351,7 +1383,10 @@ if(text==="🔢 Set Watch Losses"){
             if(running[id])return send(msg.chat.id,"⚠️ Already running!");
 
             running[id]=true;sentPeriods[id]=new Set();
-            autobetState[id]={level:1,consecutiveLoss:0,inMart:false};
+            autobetState[id]={level:1,consecutiveLoss:0,inMart:false,isWaiting:false,nextStartTime:null};
+            initState(id);
+            userStates[id].currentMode=null;
+            userStates[id].lastPrediction=null;
 
             // Load previous B/S history from API
             const prevList = await fetchList();
