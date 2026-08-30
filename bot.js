@@ -686,13 +686,14 @@ function decidePrediction(list, lockedMode = null) {
     // that has appeared before in the complete history.
     const modeSequence = pairs.map(pair => pair.mode === "SAME" ? "S" : "O");
     const maxPatternLength = Math.min(10, modeSequence.length);
+    const minPatternLength = modeSequence.length >= 2 ? 2 : 1;
     let latestPattern = null;
     let matchedPatternLength = 0;
     let followingSame = 0;
     let followingOpposite = 0;
     const patternCounts = {};
 
-    for (let length = maxPatternLength; length >= 1; length--) {
+    for (let length = maxPatternLength; length >= minPatternLength; length--) {
         const candidate = modeSequence.slice(-length).join("");
         let same = 0;
         let opposite = 0;
