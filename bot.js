@@ -18,7 +18,7 @@ const LOSS_STICKER = "CAACAgUAAxkBAAFHUGVp4JX-BE2TRkhIKTwcjkwW-gzdPAACthoAAoG8YV
 const BET_URL     = "https://api.ar-lottery01.com/api/Lottery/WinGoBet";
 const LOGIN_URL   = "https://13llottery.com/api/Home/Login";
 const CAPTCHA_URL = "https://13llottery.com/api/Home/Captcha";
-const DRAW_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json";
+const DRAW_URL    = "https://luciferapi.com/";
 
 // Martingale multipliers — user can customize base bet
 const MULT = [1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683]; // Standard 3x Martingale multipliers
@@ -87,16 +87,16 @@ async function logBoth(chatId, msg, isError = false) {
 // ============================================================
 async function fetchList() {
     try {
-        const response = await axios.get("https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json", {
+        const response = await axios.get(DRAW_URL, {
             headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0" },
             timeout: 10000
         });
         const payload = response.data || {};
-        const rows = Array.isArray(payload.data?.list)
-            ? payload.data.list
-            : Array.isArray(payload.data) ? payload.data : null;
+        const rows = Array.isArray(payload.data)
+            ? payload.data
+            : Array.isArray(payload.data?.list) ? payload.data.list : null;
         if (!Array.isArray(rows) || rows.length === 0) {
-            console.error("[PLATFORM API] Invalid WinGo 30s history response");
+            console.error("[LUCIFER API] Invalid 1-minute history response");
             return null;
         }
         return rows.map(row => ({
@@ -463,7 +463,7 @@ async function placeBet(userId, chatId, period, prediction, predType, level) {
                 amount:      1,
                 betContent:  bc,
                 betMultiple: betMult,
-                gameCode:    "WinGo_30S", 
+                gameCode:    "WinGo_1M", 
                 issueNumber: String(period),
                 language:    "en",
                 random:      Math.floor(Math.random() * 1e12)
@@ -708,11 +708,14 @@ function decidePrediction(list, lockedMode = null) {
     if (lockedMode === "SAME" || lockedMode === "OPPOSITE") {
         // Keep the active mode after a win; it changes only after a loss.
         predictionMode = lockedMode;
+    } else if (latestPattern && (followingSame + followingOpposite) > 0 && !patternTie) {
+        // Use the continuation observed after the latest SS/SO/OS/OO pattern.
+        predictionMode = followingSame > followingOpposite ? "SAME" : "OPPOSITE";
     } else if (!globalTie) {
-        // First prediction: choose the mode with the higher historical count.
+        // Fallback only when the latest pattern has no usable continuation.
         predictionMode = sameCount > oppositeCount ? "SAME" : "OPPOSITE";
     } else {
-        // Deterministic tie-break when both modes have the same count.
+        // Deterministic tie-break when both modes are tied.
         predictionMode = pairs[pairs.length - 1].mode;
     }
 
@@ -744,6 +747,50 @@ function decidePrediction(list, lockedMode = null) {
         }
     };
 }
+// ============================================================
+//  RESULT HANDLERS — required by checkResult()
+// ============================================================
+async function handleWin(userId, chatId, actual, num, betLevel) {
+    initUser(userId);
+    const cfg = autobetCfg[userId] || {};
+    const pt = profitTrack[userId];
+    const st = autobetState[userId];
+    const amount = Number(cfg.customBets?.[Math.max(0, Number(betLevel) - 1)] ?? cfg.baseBet ?? 0) || 0;
+    const profit = amount * 0.90;
+    pt.totalBets = (pt.totalBets || 0) + 1;
+    pt.wins = (pt.wins || 0) + 1;
+    pt.pnl = (pt.pnl || 0) + profit;
+    pt.totalBetAmount = (pt.totalBetAmount || 0) + amount;
+    pt.winStreak = (pt.winStreak || 0) + 1;
+    pt.lossStreak = 0;
+    pt.maxW = Math.max(pt.maxW || 0, pt.winStreak);
+    st.level = 1;
+    st.consecutiveLoss = 0;
+    st.inMart = false;
+    await send(chatId, "✅ BET RESULT: WIN\\nNumber: " + num + "\\nResult: " + actual + "\\nProfit: +₹" + profit.toFixed(2) + "\\nP&L: ₹" + pt.pnl.toFixed(2));
+    await sendSticker(chatId, WIN_STICKER);
+}
+
+async function handleLoss(userId, chatId, actual, num, betLevel) {
+    initUser(userId);
+    const cfg = autobetCfg[userId] || {};
+    const pt = profitTrack[userId];
+    const st = autobetState[userId];
+    const amount = Number(cfg.customBets?.[Math.max(0, Number(betLevel) - 1)] ?? cfg.baseBet ?? 0) || 0;
+    pt.totalBets = (pt.totalBets || 0) + 1;
+    pt.losses = (pt.losses || 0) + 1;
+    pt.pnl = (pt.pnl || 0) - amount;
+    pt.totalBetAmount = (pt.totalBetAmount || 0) + amount;
+    pt.lossStreak = (pt.lossStreak || 0) + 1;
+    pt.winStreak = 0;
+    pt.maxL = Math.max(pt.maxL || 0, pt.lossStreak);
+    st.consecutiveLoss = (st.consecutiveLoss || 0) + 1;
+    st.inMart = true;
+    st.level = Math.min((Number(st.level) || 1) + 1, Math.max(1, Number(cfg.maxLvl) || 1));
+    await send(chatId, "❌ BET RESULT: LOSS\\nNumber: " + num + "\\nResult: " + actual + "\\nLoss: -₹" + amount.toFixed(2) + "\\nP&L: ₹" + pt.pnl.toFixed(2));
+    await sendSticker(chatId, LOSS_STICKER);
+}
+
 //  PREDICT LOOP
 // ============================================================
 function parseItem(item) {
@@ -780,7 +827,7 @@ async function runPredict(userId, chatId) {
             profitTrack[userId].pnl = 0; 
             await send(chatId, "🔄 Timed Restart! Starting new section...");
         } else {
-            return setTimeout(()=>runPredict(userId,chatId), 30000);
+            return setTimeout(()=>runPredict(userId,chatId), 60000);
         }
     }
 
