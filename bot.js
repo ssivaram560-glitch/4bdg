@@ -585,14 +585,14 @@ async function placeBet(userId, chatId, period, prediction, predType, level) {
 function initState(userId) {
     initUser(userId);
     if (!userStates[userId]) {
-        userStates[userId] = { resultHistory: [], skipCount: 0, currentMode: null, lastPrediction: null, mode: "RECOVERY" };
+        userStates[userId] = { resultHistory: [], skipCount: 0, currentMode: null, lastPrediction: null, mode: "NORMAL" };
     }
     const state = userStates[userId];
     if (!Array.isArray(state.resultHistory)) state.resultHistory = [];
     if (typeof state.skipCount !== "number") state.skipCount = 0;
     if (state.currentMode === undefined) state.currentMode = null;
     if (state.lastPrediction === undefined) state.lastPrediction = null;
-    if (state.mode !== "RECOVERY") state.mode = "RECOVERY";
+    if (state.mode !== "NORMAL" && state.mode !== "RECOVERY") state.mode = "NORMAL";
     if (state.currentMode !== "SAME" && state.currentMode !== "OPPOSITE") state.currentMode = null;
 }
 
@@ -609,6 +609,16 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
     const bs = actualSize === "BIG" || actualSize === "B" ? "B" : "S";
     state.resultHistory.push(bs);
     if (state.resultHistory.length > 50) state.resultHistory.shift();
+
+    // Mode state changes after every resolved prediction.
+    // NORMAL win     => remain NORMAL
+    // NORMAL loss    => RECOVERY
+    // RECOVERY win   => remain RECOVERY
+    // RECOVERY loss  => NORMAL
+    const previousMode = state.mode === "RECOVERY" ? "RECOVERY" : "NORMAL";
+    state.mode = wasWin
+        ? previousMode
+        : (previousMode === "NORMAL" ? "RECOVERY" : "NORMAL");
 
     // Watch/failed-bet results must not alter martingale state.
     if (!betPlaced) return;
@@ -792,7 +802,7 @@ function decidePrediction(list, lockedMode = null) {
 // BET-TIME CALCULATION GATE ONLY
 // SAME/OPPOSITE prediction logic above is intentionally unchanged.
 // ============================================================
-function checkBetCalculation(list, expectedPeriod, predictedSize, mode = "RECOVERY") {
+function checkBetCalculation(list, expectedPeriod, predictedSize, mode = "NORMAL") {
     if (!Array.isArray(list) || list.length < 1) {
         return { ok: false, reason: "history unavailable" };
     }
@@ -843,13 +853,14 @@ function checkBetCalculation(list, expectedPeriod, predictedSize, mode = "RECOVE
         return { ok: false, reason: "invalid last digit" };
     }
 
-    if (mode !== "RECOVERY") {
-        return { ok: false, reason: "calculation gate requires RECOVERY mode" };
-    }
+    const activeMode = mode === "RECOVERY" ? "RECOVERY" : "NORMAL";
 
-    // RECOVERY mapping requested by the user:
-    // 0-4 => BIG, 5-9 => SMALL.
-    const calculationPrediction = lastDigit <= 4 ? "BIG" : "SMALL";
+    // NORMAL mapping:   0-4 => SMALL, 5-9 => BIG.
+    // RECOVERY mapping: 0-4 => BIG,   5-9 => SMALL.
+    const calculationPrediction = activeMode === "RECOVERY"
+        ? (lastDigit <= 4 ? "BIG" : "SMALL")
+        : (lastDigit <= 4 ? "SMALL" : "BIG");
+
     const normalizedPrediction = String(predictedSize || "").toUpperCase();
     const rangeMatchesPrediction = calculationPrediction === normalizedPrediction;
 
@@ -876,7 +887,8 @@ function checkBetCalculation(list, expectedPeriod, predictedSize, mode = "RECOVE
         first14,
         lastDigit,
         calculationPrediction,
-        matchedRule: "RECOVERY_RANGE"
+        mode: activeMode,
+        matchedRule: `${activeMode}_RANGE`
     };
 }
 
@@ -975,7 +987,8 @@ async function runPredict(userId, chatId) {
     // Extra check is performed only for betting. It does not replace or alter signal.mode.
     const calcGate = checkBetCalculation(list, next, signal.val, state.mode);
     state.currentMode = signal.mode;
-    state.mode = "RECOVERY";
+    // Keep the current NORMAL/RECOVERY state for this prediction.
+    state.mode = state.mode === "RECOVERY" ? "RECOVERY" : "NORMAL";
     state.lastPrediction = signal.val;
     const predictionLevel = Math.max(1, Number(st.level) || 1);
 
@@ -1004,8 +1017,9 @@ async function runPredict(userId, chatId) {
 "╠══════════════════════════╣\n"+
 "║ Period  : "+next.slice(-6)+"\n"+
 "║ Signal  : "+(signal.val==="BIG"?"🔵 BIG":"🟠 SMALL")+"\n"+
-"║ Mode    : "+signal.mode+" (S:"+signal.sameCount+" / O:"+signal.oppositeCount+")\n"+
+        "║ Mode    : "+state.mode+" | "+signal.mode+" (S:"+signal.sameCount+" / O:"+signal.oppositeCount+")\n"+
         "║ Ref     : "+signal.referencePeriod+" "+signal.referenceSize+"\n"+
+        "║ Calc    : "+calcGate.lastDigit+" → "+calcGate.calculationPrediction+"\n"+
         "║ Pattern : "+(signal.history || "N/A")+"\n"+
 "╠══════════════════════════╣\n"+
 "║ "+abLine+"\n"+
@@ -1024,7 +1038,18 @@ async function runPredict(userId, chatId) {
         }
     }
 
-    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced, signal.mode, predictionLevel);
+    checkResult(
+        userId,
+        chatId,
+        next,
+        signal.val,
+        signal.type,
+        betPlaced,
+        signal.mode,
+        predictionLevel,
+        calcGate,
+        state.mode
+    );
 }
 // ============================================================
 //  RESULT CHECKER
@@ -1032,7 +1057,7 @@ async function runPredict(userId, chatId) {
 
 
 // 4. checkResult - Robust Update & Full UI
-async function checkResult(userId, chatId, target, predicted, predType, betPlaced, usedMode, predictionLevel) {
+async function checkResult(userId, chatId, target, predicted, predType, betPlaced, usedMode, predictionLevel, calcGate, betMode) {
     let tries = 0;
     const cfg = autobetCfg[userId];
     const st = autobetState[userId];
@@ -1060,8 +1085,31 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         // Use the level shown with this prediction, even when AutoBet is OFF or the bet fails.
         const betLevel = Math.max(1, Number(predictionLevel) || Number(st.level) || 1);
 
-        // Keep the mode after a win; switch SAME <-> OPPOSITE after a loss.
+        // Keep the requested NORMAL/RECOVERY state after a win and switch it after a loss.
         updateAfterResult(userId, win, actual, betPlaced, usedMode);
+
+        const resolvedMode = userStates[userId]?.mode || betMode || "NORMAL";
+        const calcDigit = Number(calcGate?.lastDigit);
+        const calcPrediction = calcGate?.calculationPrediction || "N/A";
+        const amount = Number(cfg.customBets?.[Math.max(0, betLevel - 1)] ?? cfg.baseBet ?? 0) || 0;
+        const resultTitle = win ? "WIN ✅" : "LOSS ❌";
+
+        await send(chatId,
+            "╔══════════════════════════╗\\n" +
+            `║ RESULT: ${resultTitle}\\n` +
+            "╠══════════════════════════╣\\n" +
+            `║ Period      : ${target}\\n` +
+            `║ Number      : ${num}\\n` +
+            `║ Actual      : ${actual}\\n` +
+            `║ Prediction  : ${predicted || "NONE"}\\n` +
+            `║ Bet Mode    : ${betMode || "NORMAL"}\\n` +
+            `║ Calc Digit  : ${Number.isInteger(calcDigit) ? calcDigit : "N/A"}\\n` +
+            `║ Calc Result : ${calcPrediction}\\n` +
+            `║ Next Mode   : ${resolvedMode}\\n` +
+            `║ Amount      : ₹${amount.toFixed(2)}\\n` +
+            `║ P&L         : ₹${Number(pt.pnl || 0).toFixed(2)}\\n` +
+            "╚══════════════════════════╝"
+        );
 
         const s = stats[userId];
         s.total++;
