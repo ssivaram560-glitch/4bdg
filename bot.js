@@ -682,26 +682,33 @@ function decidePrediction(list, lockedMode = null) {
     const sameCount = pairs.filter(p => p.mode === "SAME").length;
     const oppositeCount = pairs.filter(p => p.mode === "OPPOSITE").length;
 
-    // Convert pair modes to S/O and inspect the latest two-pair pattern.
-    // Examples: SS, SO, OS, OO.
+    // Convert pair modes to S/O and find the longest suffix pattern (1..10)
+    // that has appeared before in the complete history.
     const modeSequence = pairs.map(pair => pair.mode === "SAME" ? "S" : "O");
-    const latestPattern = modeSequence.length >= 2 ? modeSequence.slice(-2).join("") : null;
-    const patternCounts = { SS: 0, SO: 0, OS: 0, OO: 0 };
-    for (let i = 0; i + 1 < modeSequence.length; i++) {
-        const pattern = modeSequence.slice(i, i + 2).join("");
-        if (patternCounts[pattern] !== undefined) patternCounts[pattern]++;
-    }
-
-    // For the latest pattern, count what mode followed it in the full history.
-    // The less frequent next mode is selected, preserving the earlier rule.
+    const maxPatternLength = Math.min(10, modeSequence.length);
+    let latestPattern = null;
+    let matchedPatternLength = 0;
     let followingSame = 0;
     let followingOpposite = 0;
-    if (latestPattern) {
-        for (let i = 0; i + 2 < modeSequence.length; i++) {
-            if (modeSequence.slice(i, i + 2).join("") === latestPattern) {
-                if (modeSequence[i + 2] === "S") followingSame++;
-                else followingOpposite++;
-            }
+    const patternCounts = {};
+
+    for (let length = maxPatternLength; length >= 1; length--) {
+        const candidate = modeSequence.slice(-length).join("");
+        let same = 0;
+        let opposite = 0;
+        let occurrences = 0;
+        for (let i = 0; i + length < modeSequence.length; i++) {
+            if (modeSequence.slice(i, i + length).join("") !== candidate) continue;
+            occurrences++;
+            if (modeSequence[i + length] === "S") same++;
+            else if (modeSequence[i + length] === "O") opposite++;
+        }
+        patternCounts["L" + length] = { pattern: candidate, occurrences, followingSame: same, followingOpposite: opposite };
+        if (!latestPattern && occurrences > 0 && (same + opposite) > 0) {
+            latestPattern = candidate;
+            matchedPatternLength = length;
+            followingSame = same;
+            followingOpposite = opposite;
         }
     }
 
@@ -745,8 +752,9 @@ function decidePrediction(list, lockedMode = null) {
         predictionDetails: {
             rule: predictionMode === "SAME" ? "same as reference result" : "opposite of reference result",
             patternRule: latestPattern ? `latest ${latestPattern} pattern continuation` : "no two-pair pattern",
-            selection: followingSame + followingOpposite > 0 && !patternTie ? "less frequent continuation" : "full-history fallback",
-            tieBreak: patternTie ? "full-history minority mode or latest pair" : null
+            selection: followingSame + followingOpposite > 0 && !patternTie ? `longest historical match L${matchedPatternLength}` : "full-history fallback",
+            tieBreak: patternTie ? "full-history count or latest pair" : null,
+            matchedPatternLength
         }
     };
 }
