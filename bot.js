@@ -623,9 +623,19 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
 
     // A placed-bet loss advances exactly one level.
     st.consecutiveLoss = (Number(st.consecutiveLoss) || 0) + 1;
-    st.inMart = true;
     const maxLevel = Math.max(1, Number(cfg.maxLvl) || 1);
-    st.level = Math.min((Number(st.level) || 1) + 1, maxLevel);
+    const currentLevel = Math.max(1, Number(st.level) || 1);
+    const reachedMaxLevel = currentLevel >= maxLevel;
+
+    // Do not stay and keep betting at the final level.
+    // After a loss at max level, start a fresh sequence from L1.
+    if (reachedMaxLevel) {
+        st.level = 1;
+        st.inMart = false;
+    } else {
+        st.level = currentLevel + 1;
+        st.inMart = true;
+    }
 
     // Change mode after TWO consecutive placed-bet losses.
     if (st.consecutiveLoss >= 2) {
@@ -633,6 +643,12 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
         if (usedMode === "SAME" || usedMode === "OPPOSITE") {
             state.currentMode = usedMode === "SAME" ? "OPPOSITE" : "SAME";
         }
+    }
+
+    // Keep the fresh sequence clean after max-level loss.
+    if (reachedMaxLevel) {
+        st.consecutiveLoss = 0;
+        st.inMart = false;
     }
 }
 
@@ -828,10 +844,18 @@ function checkBetCalculation(list, expectedPeriod, predictedSize) {
 
     const calculationPrediction = lastDigit <= 4 ? "SMALL" : "BIG";
 
-    // Match the calculation range against the existing SAME/OPPOSITE prediction.
-    // SMALL => calculated last digit 0-4; BIG => calculated last digit 5-9.
+    // Old rules remain valid:
+    // SMALL + 0-4, BIG + 5-9.
+    // Additional valid exceptions:
+    // BIG + 3, SMALL + 6.
     const normalizedPrediction = String(predictedSize || "").toUpperCase();
-    const rangeMatchesPrediction = calculationPrediction === normalizedPrediction;
+    const oldRuleMatch =
+        (normalizedPrediction === "SMALL" && lastDigit >= 0 && lastDigit <= 4) ||
+        (normalizedPrediction === "BIG" && lastDigit >= 5 && lastDigit <= 9);
+    const exceptionRuleMatch =
+        (normalizedPrediction === "BIG" && lastDigit === 3) ||
+        (normalizedPrediction === "SMALL" && lastDigit === 6);
+    const rangeMatchesPrediction = oldRuleMatch || exceptionRuleMatch;
 
     if (!rangeMatchesPrediction) {
         return {
@@ -855,7 +879,8 @@ function checkBetCalculation(list, expectedPeriod, predictedSize) {
         answer,
         first14,
         lastDigit,
-        calculationPrediction
+        calculationPrediction,
+        matchedRule: oldRuleMatch ? "OLD_RANGE" : "EXCEPTION"
     };
 }
 
@@ -992,7 +1017,7 @@ async function runPredict(userId, chatId) {
     );
 
     let betPlaced = false;
-    if (canBet && calcGate.ok && calcGate.calculationPrediction === signal.val) { 
+    if (canBet && calcGate.ok) { 
         const result = await placeBet(userId, chatId, next, signal.val, signal.type, st.level);
         if (result && result.ok) {
             betPlaced = true;
