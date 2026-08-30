@@ -1094,7 +1094,9 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         const displayPnl = Number(pt.pnl || 0) + (betPlaced ? expectedPnl : 0);
         const resultTitle = win ? "WIN ✅" : "LOSS ❌";
 
-        await send(chatId,
+        // Detailed dashboard is shown only when the bet was actually placed.
+        if (betPlaced) {
+            await send(chatId,
             "╔══════════════════════════╗\\n" +
             `║ RESULT: ${resultTitle}\\n` +
             "╠══════════════════════════╣\\n" +
@@ -1109,7 +1111,8 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
             `║ Amount      : ₹${amount.toFixed(2)}\\n` +
             `║ P&L         : ₹${displayPnl.toFixed(2)}\\n` +
             "╚══════════════════════════╝"
-        );
+            );
+        }
 
         const s = stats[userId];
         s.total++;
