@@ -610,7 +610,11 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
     state.resultHistory.push(bs);
     if (state.resultHistory.length > 50) state.resultHistory.shift();
 
-    // Mode state changes after every resolved prediction.
+        // No bet placed means no mode transition.
+    // The current mode is preserved for the next analysis.
+    if (!betPlaced) return;
+
+    // Mode changes happen only after a successfully placed bet resolves.
     // NORMAL win     => remain NORMAL
     // NORMAL loss    => RECOVERY
     // RECOVERY win   => remain RECOVERY
@@ -619,9 +623,6 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
     state.mode = wasWin
         ? previousMode
         : (previousMode === "NORMAL" ? "RECOVERY" : "NORMAL");
-
-    // Watch/failed-bet results must not alter martingale state.
-    if (!betPlaced) return;
 
     // A placed-bet win resets the martingale sequence to level 1.
     if (wasWin) {
