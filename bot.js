@@ -712,6 +712,15 @@ function decidePrediction(list, lockedMode = null) {
         }
     }
 
+    // Always retain a visible two-symbol fallback pattern: SS, SO, OS, or OO.
+    // If no longer pattern has historical continuation, use the latest pair label
+    // for display and use the full-history mode count as the safe prediction fallback.
+    const fallbackPattern = modeSequence.slice(-2).join("") || modeSequence.slice(-1).join("");
+    if (!latestPattern && fallbackPattern) {
+        latestPattern = fallbackPattern;
+        matchedPatternLength = Math.min(2, modeSequence.length);
+    }
+
     const globalTie = sameCount === oppositeCount;
     const patternTie = followingSame === followingOpposite;
     let predictionMode;
@@ -752,8 +761,9 @@ function decidePrediction(list, lockedMode = null) {
         predictionDetails: {
             rule: predictionMode === "SAME" ? "same as reference result" : "opposite of reference result",
             patternRule: latestPattern ? `latest ${latestPattern} pattern continuation` : "no two-pair pattern",
-            selection: followingSame + followingOpposite > 0 && !patternTie ? `longest historical match L${matchedPatternLength}` : "full-history fallback",
+            selection: followingSame + followingOpposite > 0 && !patternTie ? `longest historical match L${matchedPatternLength}` : `fallback pattern ${fallbackPattern || "N/A"} + full-history count`,
             tieBreak: patternTie ? "full-history count or latest pair" : null,
+            fallbackPattern,
             matchedPatternLength
         }
     };
