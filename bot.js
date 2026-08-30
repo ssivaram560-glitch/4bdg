@@ -585,13 +585,14 @@ async function placeBet(userId, chatId, period, prediction, predType, level) {
 function initState(userId) {
     initUser(userId);
     if (!userStates[userId]) {
-        userStates[userId] = { resultHistory: [], skipCount: 0, currentMode: null, lastPrediction: null };
+        userStates[userId] = { resultHistory: [], skipCount: 0, currentMode: null, lastPrediction: null, mode: "RECOVERY" };
     }
     const state = userStates[userId];
     if (!Array.isArray(state.resultHistory)) state.resultHistory = [];
     if (typeof state.skipCount !== "number") state.skipCount = 0;
     if (state.currentMode === undefined) state.currentMode = null;
     if (state.lastPrediction === undefined) state.lastPrediction = null;
+    if (state.mode !== "RECOVERY") state.mode = "RECOVERY";
     if (state.currentMode !== "SAME" && state.currentMode !== "OPPOSITE") state.currentMode = null;
 }
 
@@ -791,7 +792,7 @@ function decidePrediction(list, lockedMode = null) {
 // BET-TIME CALCULATION GATE ONLY
 // SAME/OPPOSITE prediction logic above is intentionally unchanged.
 // ============================================================
-function checkBetCalculation(list, expectedPeriod, predictedSize) {
+function checkBetCalculation(list, expectedPeriod, predictedSize, mode = "RECOVERY") {
     if (!Array.isArray(list) || list.length < 1) {
         return { ok: false, reason: "history unavailable" };
     }
@@ -842,20 +843,15 @@ function checkBetCalculation(list, expectedPeriod, predictedSize) {
         return { ok: false, reason: "invalid last digit" };
     }
 
-    const calculationPrediction = lastDigit <= 4 ? "SMALL" : "BIG";
+    if (mode !== "RECOVERY") {
+        return { ok: false, reason: "calculation gate requires RECOVERY mode" };
+    }
 
-    // Old rules remain valid:
-    // SMALL + 0-4, BIG + 5-9.
-    // Additional valid exceptions:
-    // BIG + 3, SMALL + 6.
+    // RECOVERY mapping requested by the user:
+    // 0-4 => BIG, 5-9 => SMALL.
+    const calculationPrediction = lastDigit <= 4 ? "BIG" : "SMALL";
     const normalizedPrediction = String(predictedSize || "").toUpperCase();
-    const oldRuleMatch =
-        (normalizedPrediction === "SMALL" && lastDigit >= 0 && lastDigit <= 4) ||
-        (normalizedPrediction === "BIG" && lastDigit >= 5 && lastDigit <= 9);
-    const exceptionRuleMatch =
-        (normalizedPrediction === "BIG" && lastDigit === 3) ||
-        (normalizedPrediction === "SMALL" && lastDigit === 6);
-    const rangeMatchesPrediction = oldRuleMatch || exceptionRuleMatch;
+    const rangeMatchesPrediction = calculationPrediction === normalizedPrediction;
 
     if (!rangeMatchesPrediction) {
         return {
@@ -880,7 +876,7 @@ function checkBetCalculation(list, expectedPeriod, predictedSize) {
         first14,
         lastDigit,
         calculationPrediction,
-        matchedRule: oldRuleMatch ? "OLD_RANGE" : "EXCEPTION"
+        matchedRule: "RECOVERY_RANGE"
     };
 }
 
@@ -977,8 +973,9 @@ async function runPredict(userId, chatId) {
     if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
 
     // Extra check is performed only for betting. It does not replace or alter signal.mode.
-    const calcGate = checkBetCalculation(list, next, signal.val);
+    const calcGate = checkBetCalculation(list, next, signal.val, state.mode);
     state.currentMode = signal.mode;
+    state.mode = "RECOVERY";
     state.lastPrediction = signal.val;
     const predictionLevel = Math.max(1, Number(st.level) || 1);
 
