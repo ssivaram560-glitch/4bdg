@@ -575,7 +575,7 @@ async function captchaLogin(userId, chatId, phone, password, bot, logBoth) {
 //  CONFIG
 // ============================================================
 // Keep secrets outside the source code.
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8957443232:AAEUBtzwrE-yb2KZQb_GmJ-bd9p2mtVZvVA";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8687914335:AAEYJ87rtDyqs_4HpFvkOnkU8O9oiEy8PmE";
 const OWNER_ID     = 8869874751;
 const OWNER_PASS   = process.env.OWNER_PASS || "2004";
 const ADMIN_HANDLE = "@Sivakutty1";
