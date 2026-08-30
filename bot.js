@@ -614,11 +614,11 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
     // NORMAL win     => remain NORMAL
     // NORMAL loss    => RECOVERY
     // RECOVERY win   => remain RECOVERY
-    // RECOVERY loss  => NORMAL
+    // RECOVERY loss  => remain RECOVERY
     const previousMode = state.mode === "RECOVERY" ? "RECOVERY" : "NORMAL";
-    state.mode = wasWin
-        ? previousMode
-        : (previousMode === "NORMAL" ? "RECOVERY" : "NORMAL");
+    state.mode = previousMode === "NORMAL" && !wasWin
+        ? "RECOVERY"
+        : previousMode;
 
     // Watch/failed-bet results must not alter martingale state.
     if (!betPlaced) return;
