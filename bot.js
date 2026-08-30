@@ -775,7 +775,7 @@ function decidePrediction(list, lockedMode = null) {
 // BET-TIME CALCULATION GATE ONLY
 // SAME/OPPOSITE prediction logic above is intentionally unchanged.
 // ============================================================
-function checkBetCalculation(list, expectedPeriod) {
+function checkBetCalculation(list, expectedPeriod, predictedSize) {
     if (!Array.isArray(list) || list.length < 1) {
         return { ok: false, reason: "history unavailable" };
     }
@@ -827,6 +827,25 @@ function checkBetCalculation(list, expectedPeriod) {
     }
 
     const calculationPrediction = lastDigit <= 4 ? "SMALL" : "BIG";
+
+    // Match the calculation range against the existing SAME/OPPOSITE prediction.
+    // SMALL => calculated last digit 0-4; BIG => calculated last digit 5-9.
+    const normalizedPrediction = String(predictedSize || "").toUpperCase();
+    const rangeMatchesPrediction = calculationPrediction === normalizedPrediction;
+
+    if (!rangeMatchesPrediction) {
+        return {
+            ok: false,
+            reason: `${normalizedPrediction || "UNKNOWN"} prediction does not match calculated digit ${lastDigit}`,
+            currentPeriod,
+            currentResult,
+            targetPeriod: nextPeriod,
+            answer,
+            first14,
+            lastDigit,
+            calculationPrediction
+        };
+    }
 
     return {
         ok: true,
@@ -933,7 +952,7 @@ async function runPredict(userId, chatId) {
     if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
 
     // Extra check is performed only for betting. It does not replace or alter signal.mode.
-    const calcGate = checkBetCalculation(list, next);
+    const calcGate = checkBetCalculation(list, next, signal.val);
     state.currentMode = signal.mode;
     state.lastPrediction = signal.val;
     const predictionLevel = Math.max(1, Number(st.level) || 1);
@@ -973,7 +992,7 @@ async function runPredict(userId, chatId) {
     );
 
     let betPlaced = false;
-    if (canBet && calcGate.ok) { 
+    if (canBet && calcGate.ok && calcGate.calculationPrediction === signal.val) { 
         const result = await placeBet(userId, chatId, next, signal.val, signal.type, st.level);
         if (result && result.ok) {
             betPlaced = true;
