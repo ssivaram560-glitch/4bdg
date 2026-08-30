@@ -836,9 +836,11 @@ async function runPredict(userId, chatId) {
     if(sentPeriods[userId].has(next)) return setTimeout(()=>runPredict(userId,chatId), 2000);
     sentPeriods[userId].add(next);
 
-    const signal = decidePrediction(list, state.currentMode);
+    // Recalculate mode from the latest full-history pattern on every period.
+    // Do not pass state.currentMode here; that would permanently lock SAME/OPPOSITE.
+    const signal = decidePrediction(list, null);
     if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
-    if (!state.currentMode) state.currentMode = signal.mode;
+    state.currentMode = null;
     state.lastPrediction = signal.val;
     // Snapshot the level used for this prediction before any result update.
     const predictionLevel = Math.max(1, Number(st.level) || 1);
