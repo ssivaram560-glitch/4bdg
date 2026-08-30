@@ -660,115 +660,82 @@ function nextIssueNumber(list) {
     return (BigInt(list[0].issueNumber) + 1n).toString();
 }
 
-function decidePrediction(list, lockedMode = null) {
-    if (!Array.isArray(list) || list.length < 3) return null;
-    const latest = list[0];
-    const target = nextIssueNumber(list);
-    if (!target) return null;
-    const chronological = [...list].sort((a, b) => BigInt(a.issueNumber) < BigInt(b.issueNumber) ? -1 : 1);
-    // Analyze the complete valid Lucifer API history. The newest completed row
-    // is excluded as the direct prediction source; the reference is the row
-    // immediately before it, matching the requested 917 -> 919 flow.
-    const analysisRows = chronological;
-    const reference = analysisRows[analysisRows.length - 2];
-    const pairs = [];
-    for (let i = 0; i + 2 < analysisRows.length; i++) {
-        const left = analysisRows[i], right = analysisRows[i + 2];
-        if (BigInt(right.issueNumber) !== BigInt(left.issueNumber) + 2n) continue;
-        const leftSize = sizeOf(left), rightSize = sizeOf(right);
-        pairs.push({ from: left.issueNumber, to: right.issueNumber, leftSize, rightSize, mode: leftSize === rightSize ? "SAME" : "OPPOSITE" });
-    }
-    if (!pairs.length) return null;
-    const sameCount = pairs.filter(p => p.mode === "SAME").length;
-    const oppositeCount = pairs.filter(p => p.mode === "OPPOSITE").length;
+function decidePrediction(list, currentLevel = 1, userId) {
+    if (!Array.isArray(list) || list.length < 2) return null;
 
-    // Convert pair modes to S/O and find the longest suffix pattern (1..10)
-    // that has appeared before in the complete history.
-    const modeSequence = pairs.map(pair => pair.mode === "SAME" ? "S" : "O");
-    const maxPatternLength = Math.min(10, modeSequence.length);
-    const minPatternLength = modeSequence.length >= 2 ? 2 : 1;
-    let latestPattern = null;
-    let matchedPatternLength = 0;
-    let followingSame = 0;
-    let followingOpposite = 0;
-    const patternCounts = {};
+    initState(userId);
+    const state = userStates[userId];
 
-    for (let length = maxPatternLength; length >= minPatternLength; length--) {
-        const candidate = modeSequence.slice(-length).join("");
-        let same = 0;
-        let opposite = 0;
-        let occurrences = 0;
-        for (let i = 0; i + length < modeSequence.length; i++) {
-            if (modeSequence.slice(i, i + length).join("") !== candidate) continue;
-            occurrences++;
-            if (modeSequence[i + length] === "S") same++;
-            else if (modeSequence[i + length] === "O") opposite++;
-        }
-        patternCounts["L" + length] = { pattern: candidate, occurrences, followingSame: same, followingOpposite: opposite };
-        if (!latestPattern && occurrences > 0 && (same + opposite) > 0) {
-            latestPattern = candidate;
-            matchedPatternLength = length;
-            followingSame = same;
-            followingOpposite = opposite;
-        }
+    // This bot only allows the requested NORMAL calculation.
+    if (state.normalMode !== undefined && state.normalMode !== "NORMAL") return null;
+    state.normalMode = "NORMAL";
+
+    const currentPeriod = String(list[0]?.issueNumber ?? "").trim();
+    const currentResult = Number(list[0]?.number ?? list[0]?.winNumber);
+
+    if (!/^\d+$/.test(currentPeriod)) return null;
+    if (!Number.isInteger(currentResult) || currentResult < 0 || currentResult > 9) return null;
+
+    // Previous result 0 => no prediction and no bet.
+    if (currentResult === 0) return null;
+
+    let nextPeriod;
+    try {
+        nextPeriod = (BigInt(currentPeriod) + 1n).toString();
+    } catch {
+        return null;
     }
 
-    // Always retain a visible two-symbol fallback pattern: SS, SO, OS, or OO.
-    // If no longer pattern has historical continuation, use the latest pair label
-    // for display and use the full-history mode count as the safe prediction fallback.
-    const fallbackPattern = modeSequence.slice(-2).join("") || modeSequence.slice(-1).join("");
-    if (!latestPattern && fallbackPattern) {
-        latestPattern = fallbackPattern;
-        matchedPatternLength = Math.min(2, modeSequence.length);
-    }
+    const nextLast3Num = Number(nextPeriod.slice(-3));
+    if (!Number.isSafeInteger(nextLast3Num)) return null;
 
-    const globalTie = sameCount === oppositeCount;
-    const patternTie = followingSame === followingOpposite;
-    let predictionMode;
-    if (lockedMode === "SAME" || lockedMode === "OPPOSITE") {
-        // Keep the active mode after a win; it changes only after a loss.
-        predictionMode = lockedMode;
-    } else if (latestPattern && (followingSame + followingOpposite) > 0 && !patternTie) {
-        // Use the continuation observed after the latest SS/SO/OS/OO pattern.
-        predictionMode = followingSame > followingOpposite ? "SAME" : "OPPOSITE";
-    } else if (!globalTie) {
-        // Fallback only when the latest pattern has no usable continuation.
-        predictionMode = sameCount > oppositeCount ? "SAME" : "OPPOSITE";
-    } else {
-        // Deterministic tie-break when both modes are tied.
-        predictionMode = pairs[pairs.length - 1].mode;
-    }
+    const answer = nextLast3Num * Math.exp(currentResult);
+    if (!Number.isFinite(answer)) return null;
 
-    const referenceSize = sizeOf(reference);
-    const predictedSize = predictionMode === "SAME" ? referenceSize : (referenceSize === "B" ? "S" : "B");
+    // Fixed notation avoids scientific notation such as 1.2e+21.
+    const digits = answer.toFixed(12).replace(/[^0-9]/g, "");
+    if (!digits) return null;
+
+    const first14 = digits.slice(0, 14);
+    const lastDigit = Number(first14.at(-1));
+    if (!Number.isInteger(lastDigit) || lastDigit < 0 || lastDigit > 9) return null;
+
+    const prediction = lastDigit <= 4 ? "SMALL" : "BIG";
+
+    state.lastPrediction = prediction;
+    state.lastPeriod = nextPeriod;
+
     return {
         type: "SIZE",
-        val: predictedSize === "B" ? "BIG" : "SMALL",
-        mode: predictionMode,
-        history: analysisRows.slice(-20).map(sizeOf).join(""),
-        analyzedRows: analysisRows.length,
-        targetPeriod: target,
-        latestCompletedPeriod: latest.issueNumber,
-        latestCompletedSize: sizeOf(latest),
-        referencePeriod: reference.issueNumber,
-        referenceSize,
-        sameCount, oppositeCount, pairCount: pairs.length,
-        latestPattern,
-        patternCounts,
-        followingSame,
-        followingOpposite,
-        lastPair: pairs[pairs.length - 1],
-        analysis: { sameCount, oppositeCount, pairCount: pairs.length, pairs, modeSequence },
-        predictionDetails: {
-            rule: predictionMode === "SAME" ? "same as reference result" : "opposite of reference result",
-            patternRule: latestPattern ? `latest ${latestPattern} pattern continuation` : "no two-pair pattern",
-            selection: followingSame + followingOpposite > 0 && !patternTie ? `longest historical match L${matchedPatternLength}` : `fallback pattern ${fallbackPattern || "N/A"} + full-history count`,
-            tieBreak: patternTie ? "full-history count or latest pair" : null,
-            fallbackPattern,
-            matchedPatternLength
-        }
+        val: prediction,
+        prediction,
+        mode: "NORMAL",
+        pat: "NORMAL",
+        conf: 90,
+        targetPeriod: nextPeriod,
+        currentPeriod,
+        currentResult,
+        calculatedAnswer: answer,
+        calculatedDigits: first14,
+        lastDigit
     };
 }
+
+function isValidNormalSignal(signal, expectedPeriod) {
+    return Boolean(
+        signal &&
+        signal.mode === "NORMAL" &&
+        signal.pat === "NORMAL" &&
+        signal.type === "SIZE" &&
+        (signal.val === "BIG" || signal.val === "SMALL") &&
+        String(signal.targetPeriod) === String(expectedPeriod) &&
+        Number.isFinite(Number(signal.conf)) &&
+        Number(signal.conf) >= 0 &&
+        Number(signal.conf) <= 100 &&
+        Number.isInteger(Number(signal.lastDigit))
+    );
+}
+
 // ============================================================
 //  RESULT HANDLERS — required by checkResult()
 // ============================================================
@@ -857,28 +824,30 @@ async function runPredict(userId, chatId) {
 
     // Recalculate mode from the latest full-history pattern on every period.
     // Do not pass state.currentMode here; that would permanently lock SAME/OPPOSITE.
-    const signal = decidePrediction(list, null);
-    if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
-    state.currentMode = null;
+    const signal = decidePrediction(list, st?.level || 1, userId);
+    const validNormalSignal = isValidNormalSignal(signal, next);
+    if (!validNormalSignal) {
+        return setTimeout(()=>runPredict(userId,chatId), 5000);
+    }
+
+    state.currentMode = "NORMAL";
     state.lastPrediction = signal.val;
-    // Snapshot the level used for this prediction before any result update.
     const predictionLevel = Math.max(1, Number(st.level) || 1);
 
     let abLine = "🤖 AutoBet: OFF";
     let canBet = false;
 
-    if (!cfg.enabled) {
+    if (signal.mode !== "NORMAL" || signal.pat !== "NORMAL") {
+        abLine = "⛔ BLOCKED: NON-NORMAL SIGNAL";
+    } else if (!cfg.enabled) {
         abLine = "🤖 AutoBet: OFF";
-        canBet = false;
-    } else if (state.skipCount > 0) {
+    } else if (Number(state.skipCount || 0) > 0) {
         abLine = `⏭️ SKIP BET (${state.skipCount} left)`;
         state.skipCount--;
-        canBet = false;
-    } else if (cfg.watch && st.consecutiveLoss < cfg.watchLoss) {
+    } else if (cfg.watch && Number(st.consecutiveLoss || 0) < Number(cfg.watchLoss || 0)) {
         abLine = `👀 WATCHING: ${st.consecutiveLoss}/${cfg.watchLoss}`;
-        canBet = false;
     } else {
-        // Condition for betting met (either direct bet or watch condition satisfied)
+        // Final gate: only a valid NORMAL signal can enable betting.
         canBet = true;
         const curBet = cfg.customBets[st.level-1] || (cfg.baseBet*MULT[st.level-1]);
         abLine = (st.level > 1 ? "📈 MART " : "💰 BET ") + "L" + st.level + ": ₹" + curBet;
@@ -900,7 +869,7 @@ async function runPredict(userId, chatId) {
     );
 
     let betPlaced = false;
-    if (canBet) { 
+    if (canBet && validNormalSignal && signal.mode === "NORMAL") { 
         const result = await placeBet(userId, chatId, next, signal.val, signal.type, st.level);
         if (result && result.ok) {
             betPlaced = true;
