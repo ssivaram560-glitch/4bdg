@@ -609,27 +609,30 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
     state.resultHistory.push(bs);
     if (state.resultHistory.length > 50) state.resultHistory.shift();
 
-    // A win keeps the current mode and level unchanged.
+    // Watch/failed-bet results must not alter martingale state.
+    if (!betPlaced) return;
+
+    // A placed-bet win resets the martingale sequence to level 1.
     if (wasWin) {
         st.consecutiveLoss = 0;
         st.inMart = false;
+        st.level = 1;
         state.skipCount = 0;
         return;
     }
 
-    // Every prediction loss is counted, whether or not a bet was placed.
+    // A placed-bet loss advances exactly one level.
     st.consecutiveLoss = (Number(st.consecutiveLoss) || 0) + 1;
     st.inMart = true;
+    const maxLevel = Math.max(1, Number(cfg.maxLvl) || 1);
+    st.level = Math.min((Number(st.level) || 1) + 1, maxLevel);
 
-    // Change mode and advance one level only after TWO consecutive losses.
+    // Change mode after TWO consecutive placed-bet losses.
     if (st.consecutiveLoss >= 2) {
         st.consecutiveLoss = 0;
         if (usedMode === "SAME" || usedMode === "OPPOSITE") {
             state.currentMode = usedMode === "SAME" ? "OPPOSITE" : "SAME";
         }
-
-        const maxLevel = Math.max(1, Number(cfg.maxLvl) || 1);
-        st.level = Math.min((Number(st.level) || 1) + 1, maxLevel);
     }
 }
 
@@ -764,9 +767,6 @@ async function handleWin(userId, chatId, actual, num, betLevel) {
     pt.winStreak = (pt.winStreak || 0) + 1;
     pt.lossStreak = 0;
     pt.maxW = Math.max(pt.maxW || 0, pt.winStreak);
-    st.level = 1;
-    st.consecutiveLoss = 0;
-    st.inMart = false;
     await send(chatId, "✅ BET RESULT: WIN\\nNumber: " + num + "\\nResult: " + actual + "\\nProfit: +₹" + profit.toFixed(2) + "\\nP&L: ₹" + pt.pnl.toFixed(2));
     await sendSticker(chatId, WIN_STICKER);
 }
@@ -784,9 +784,6 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
     pt.lossStreak = (pt.lossStreak || 0) + 1;
     pt.winStreak = 0;
     pt.maxL = Math.max(pt.maxL || 0, pt.lossStreak);
-    st.consecutiveLoss = (st.consecutiveLoss || 0) + 1;
-    st.inMart = true;
-    st.level = Math.min((Number(st.level) || 1) + 1, Math.max(1, Number(cfg.maxLvl) || 1));
     await send(chatId, "❌ BET RESULT: LOSS\\nNumber: " + num + "\\nResult: " + actual + "\\nLoss: -₹" + amount.toFixed(2) + "\\nP&L: ₹" + pt.pnl.toFixed(2));
     await sendSticker(chatId, LOSS_STICKER);
 }
