@@ -909,8 +909,7 @@ async function handleWin(userId, chatId, actual, num, betLevel) {
     pt.winStreak = (pt.winStreak || 0) + 1;
     pt.lossStreak = 0;
     pt.maxW = Math.max(pt.maxW || 0, pt.winStreak);
-    await send(chatId, "✅ BET RESULT: WIN\\nNumber: " + num + "\\nResult: " + actual + "\\nProfit: +₹" + profit.toFixed(2) + "\\nP&L: ₹" + pt.pnl.toFixed(2));
-    await sendSticker(chatId, WIN_STICKER);
+    // Unified result dashboard is sent by checkResult().
 }
 
 async function handleLoss(userId, chatId, actual, num, betLevel) {
@@ -926,8 +925,7 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
     pt.lossStreak = (pt.lossStreak || 0) + 1;
     pt.winStreak = 0;
     pt.maxL = Math.max(pt.maxL || 0, pt.lossStreak);
-    await send(chatId, "❌ BET RESULT: LOSS\\nNumber: " + num + "\\nResult: " + actual + "\\nLoss: -₹" + amount.toFixed(2) + "\\nP&L: ₹" + pt.pnl.toFixed(2));
-    await sendSticker(chatId, LOSS_STICKER);
+    // Unified result dashboard is sent by checkResult().
 }
 
 //  PREDICT LOOP
@@ -1092,6 +1090,8 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         const calcDigit = Number(calcGate?.lastDigit);
         const calcPrediction = calcGate?.calculationPrediction || "N/A";
         const amount = Number(cfg.customBets?.[Math.max(0, betLevel - 1)] ?? cfg.baseBet ?? 0) || 0;
+        const expectedPnl = win ? amount * 0.90 : -amount;
+        const displayPnl = Number(pt.pnl || 0) + (betPlaced ? expectedPnl : 0);
         const resultTitle = win ? "WIN ✅" : "LOSS ❌";
 
         await send(chatId,
@@ -1107,7 +1107,7 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
             `║ Calc Result : ${calcPrediction}\\n` +
             `║ Next Mode   : ${resolvedMode}\\n` +
             `║ Amount      : ₹${amount.toFixed(2)}\\n` +
-            `║ P&L         : ₹${Number(pt.pnl || 0).toFixed(2)}\\n` +
+            `║ P&L         : ₹${displayPnl.toFixed(2)}\\n` +
             "╚══════════════════════════╝"
         );
 
