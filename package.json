@@ -1,20 +1,22 @@
 {
-  "name": "autobetbot",
+"name": "autobetbot",
   "version": "1.0.0",
+  "private": true,
   "type": "commonjs",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
-    "axios": "^1.18.0",
-    "crypto": "^1.0.1",
+    "axios": "^1.19.0",
     "express": "^5.2.1",
     "node-telegram-api": "^0.4.0",
     "node-telegram-bot-api": "^0.66.0",
     "playwright": "^1.60.0",
     "playwright-extra": "^4.3.6",
-    "puppeteer": "^25.1.0",
+    "pngjs": "^7.0.0",
+    "puppeteer": "^25.4.0",
+    "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
 }
