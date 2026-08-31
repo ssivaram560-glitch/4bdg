@@ -991,22 +991,20 @@ async function runPredict(userId, chatId) {
     state.lastPrediction = signal.val;
     const predictionLevel = Math.max(1, Number(st.level) || 1);
 
-    let abLine = "🤖 AutoBet: OFF";
+        let abLine = "🤖 AutoBet: OFF";
     let canBet = false;
 
+    // Only these two controls decide whether a bet can be placed:
+    // 1) AutoBet must be enabled.
+    // 2) Calculation result must agree with the existing SAME/OPPOSITE signal.
+    // No skip/watch/extra prediction gate is applied here.
     if (!cfg.enabled) {
         abLine = "🤖 AutoBet: OFF";
     } else if (!calcGate.ok) {
         abLine = `⛔ BET BLOCKED: ${calcGate.reason}`;
-    } else if (state.skipCount > 0) {
-        abLine = `⏭️ SKIP BET (${state.skipCount} left)`;
-        state.skipCount--;
-    } else if (cfg.watch && st.consecutiveLoss < cfg.watchLoss) {
-        abLine = `👀 WATCHING: ${st.consecutiveLoss}/${cfg.watchLoss}`;
     } else {
-        // Existing SAME/OPPOSITE signal remains the prediction used for the bet.
         canBet = true;
-        const curBet = cfg.customBets[st.level-1] || (cfg.baseBet*MULT[st.level-1]);
+        const curBet = cfg.customBets[st.level - 1] || (cfg.baseBet * MULT[st.level - 1]);
         abLine = (st.level > 1 ? "📈 MART " : "💰 BET ") + "L" + st.level + ": ₹" + curBet;
     }
 
