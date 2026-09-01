@@ -865,6 +865,68 @@ function check16Combination(list, predictedSize) {
 }
 
 // ============================================================
+//  EXTRA PART 1 / PART 4 CHECKS
+// These are additional validators; the existing signal and bet flow stay intact.
+// ============================================================
+function part1OppositePrediction(list) {
+    if (!Array.isArray(list) || !list.length) return null;
+    const latest = sizeOf(list[0]);
+    if (!latest) return null;
+    return latest === "B" ? "SMALL" : "BIG";
+}
+
+function part4EnsemblePrediction(list) {
+    if (!Array.isArray(list) || list.length < 3) return null;
+    const rows = list.slice(0, 20);
+    let bigScore = 0;
+    let smallScore = 0;
+
+    rows.forEach((row, index) => {
+        const weight = Math.max(1, rows.length - index);
+        if (sizeOf(row) === "B") bigScore += weight;
+        else if (sizeOf(row) === "S") smallScore += weight;
+    });
+
+    // Recent streak reversal component.
+    const latestSize = sizeOf(list[0]);
+    let streak = 0;
+    for (const row of list) {
+        if (sizeOf(row) !== latestSize) break;
+        streak++;
+    }
+    if (streak >= 3) {
+        if (latestSize === "B") smallScore += 3;
+        else bigScore += 3;
+    }
+
+    // Last transition component.
+    const previousSize = sizeOf(list[1]);
+    if (latestSize && previousSize && latestSize !== previousSize) {
+        if (latestSize === "B") bigScore += 1;
+        else smallScore += 1;
+    }
+
+    return bigScore >= smallScore ? "BIG" : "SMALL";
+}
+
+function checkPart1AndPart4(list, predictedSize) {
+    const actualPrediction = String(predictedSize || "").toUpperCase();
+    const part1 = part1OppositePrediction(list);
+    const part4 = part4EnsemblePrediction(list);
+    return {
+        ok: Boolean(part1 && part4 && part1 === actualPrediction && part4 === actualPrediction),
+        part1,
+        part4,
+        predicted: actualPrediction,
+        reason: !part1 || !part4
+            ? "Part 1/Part 4 history unavailable"
+            : (part1 === actualPrediction && part4 === actualPrediction
+                ? "Part 1 and Part 4 matched"
+                : `Part1=${part1}, Part4=${part4}, signal=${actualPrediction}`)
+    };
+}
+
+// ============================================================
 //  BET-TIME CALCULATION GATE ONLY
 // SAME/OPPOSITE prediction logic above is intentionally unchanged.
 // ============================================================
@@ -1051,6 +1113,7 @@ async function runPredict(userId, chatId) {
     // Extra check is performed only for betting. It does not replace or alter signal.mode.
     const calcGate = checkBetCalculation(list, next, signal.val, state.mode);
     const combinationGate = check16Combination(list, signal.val);
+    const partGate = checkPart1AndPart4(list, signal.val);
     state.currentMode = signal.mode;
     // Keep the current NORMAL/RECOVERY state for this prediction.
     state.mode = state.mode === "RECOVERY" ? "RECOVERY" : "NORMAL";
@@ -1070,6 +1133,8 @@ async function runPredict(userId, chatId) {
         abLine = `⛔ BET BLOCKED: ${calcGate.reason}`;
     } else if (!combinationGate.ok) {
         abLine = `⛔ BET BLOCKED: ${combinationGate.reason}`;
+    } else if (!partGate.ok) {
+        abLine = `⛔ BET BLOCKED: ${partGate.reason}`;
     } else {
         canBet = true;
         const curBet = cfg.customBets[st.level - 1] || (cfg.baseBet * MULT[st.level - 1]);
@@ -1086,6 +1151,7 @@ async function runPredict(userId, chatId) {
         "║ Ref     : "+signal.referencePeriod+" "+signal.referenceSize+"\n"+
         "║ Calc    : "+calcGate.lastDigit+" → "+calcGate.calculationPrediction+"\n"+
         "║ Combo   : "+(combinationGate.pairKey || "N/A")+" → "+(combinationGate.expected || "N/A")+"\n"+
+        "║ Part1   : "+(partGate.part1 || "N/A")+" | Part4: "+(partGate.part4 || "N/A")+"\n"+
         "║ Pattern : "+(signal.history || "N/A")+"\n"+
 "╠══════════════════════════╣\n"+
 "║ "+abLine+"\n"+
@@ -1094,7 +1160,8 @@ async function runPredict(userId, chatId) {
     );
 
     let betPlaced = false;
-    if (canBet && calcGate.ok && combinationGate.ok) { 
+    // Existing bet condition is preserved and the two extra checks are appended.
+    if (canBet && calcGate.ok && combinationGate.ok && partGate.ok) { 
         const result = await placeBet(userId, chatId, next, signal.val, signal.type, st.level);
         if (result && result.ok) {
             betPlaced = true;
