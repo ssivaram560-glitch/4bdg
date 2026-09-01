@@ -585,14 +585,13 @@ async function placeBet(userId, chatId, period, prediction, predType, level) {
 function initState(userId) {
     initUser(userId);
     if (!userStates[userId]) {
-        userStates[userId] = { resultHistory: [], skipCount: 0, currentMode: null, lastPrediction: null, mode: "NORMAL" };
+        userStates[userId] = { resultHistory: [], skipCount: 0, currentMode: null, lastPrediction: null };
     }
     const state = userStates[userId];
     if (!Array.isArray(state.resultHistory)) state.resultHistory = [];
     if (typeof state.skipCount !== "number") state.skipCount = 0;
     if (state.currentMode === undefined) state.currentMode = null;
     if (state.lastPrediction === undefined) state.lastPrediction = null;
-    if (state.mode !== "NORMAL" && state.mode !== "RECOVERY") state.mode = "NORMAL";
     if (state.currentMode !== "SAME" && state.currentMode !== "OPPOSITE") state.currentMode = null;
 }
 
@@ -610,17 +609,7 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
     state.resultHistory.push(bs);
     if (state.resultHistory.length > 50) state.resultHistory.shift();
 
-            // Mode rotates after every resolved prediction, even when no bet was placed.
-    // NORMAL win     => remain NORMAL
-    // NORMAL loss    => RECOVERY
-    // RECOVERY win   => remain RECOVERY
-    // RECOVERY loss  => NORMAL
-    const previousMode = state.mode === "RECOVERY" ? "RECOVERY" : "NORMAL";
-    state.mode = wasWin
-        ? previousMode
-        : (previousMode === "NORMAL" ? "RECOVERY" : "NORMAL");
-
-    // Bet accounting and martingale changes remain bet-only.
+    // Watch/failed-bet results must not alter martingale state.
     if (!betPlaced) return;
 
     // A placed-bet win resets the martingale sequence to level 1.
@@ -634,19 +623,9 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
 
     // A placed-bet loss advances exactly one level.
     st.consecutiveLoss = (Number(st.consecutiveLoss) || 0) + 1;
+    st.inMart = true;
     const maxLevel = Math.max(1, Number(cfg.maxLvl) || 1);
-    const currentLevel = Math.max(1, Number(st.level) || 1);
-    const reachedMaxLevel = currentLevel >= maxLevel;
-
-    // Do not stay and keep betting at the final level.
-    // After a loss at max level, start a fresh sequence from L1.
-    if (reachedMaxLevel) {
-        st.level = 1;
-        st.inMart = false;
-    } else {
-        st.level = currentLevel + 1;
-        st.inMart = true;
-    }
+    st.level = Math.min((Number(st.level) || 1) + 1, maxLevel);
 
     // Change mode after TWO consecutive placed-bet losses.
     if (st.consecutiveLoss >= 2) {
@@ -654,12 +633,6 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
         if (usedMode === "SAME" || usedMode === "OPPOSITE") {
             state.currentMode = usedMode === "SAME" ? "OPPOSITE" : "SAME";
         }
-    }
-
-    // Keep the fresh sequence clean after max-level loss.
-    if (reachedMaxLevel) {
-        st.consecutiveLoss = 0;
-        st.inMart = false;
     }
 }
 
@@ -714,6 +687,22 @@ function decidePrediction(list, lockedMode = null) {
     const modeSequence = pairs.map(pair => pair.mode === "SAME" ? "S" : "O");
     const maxPatternLength = Math.min(10, modeSequence.length);
     const minPatternLength = modeSequence.length >= 2 ? 2 : 1;
+    const pairPatternTotals = {
+        SO: { occurrences: 0, followingSame: 0, followingOpposite: 0 },
+        OO: { occurrences: 0, followingSame: 0, followingOpposite: 0 },
+        OS: { occurrences: 0, followingSame: 0, followingOpposite: 0 },
+        SS: { occurrences: 0, followingSame: 0, followingOpposite: 0 }
+    };
+    for (let i = 0; i + 2 < modeSequence.length; i++) {
+        const pair = modeSequence.slice(i, i + 2).join("");
+        const bucket = pairPatternTotals[pair];
+        if (!bucket) continue;
+        bucket.occurrences++;
+        if (modeSequence[i + 2] === "S") bucket.followingSame++;
+        else if (modeSequence[i + 2] === "O") bucket.followingOpposite++;
+    }
+    const totalPairPatternSame = Object.values(pairPatternTotals).reduce((n, x) => n + x.followingSame, 0);
+    const totalPairPatternOpposite = Object.values(pairPatternTotals).reduce((n, x) => n + x.followingOpposite, 0);
     let latestPattern = null;
     let matchedPatternLength = 0;
     let followingSame = 0;
@@ -751,6 +740,7 @@ function decidePrediction(list, lockedMode = null) {
 
     const globalTie = sameCount === oppositeCount;
     const patternTie = followingSame === followingOpposite;
+    const pairTotalsTie = totalPairPatternSame === totalPairPatternOpposite;
     let predictionMode;
     if (lockedMode === "SAME" || lockedMode === "OPPOSITE") {
         // Keep the active mode after a win; it changes only after a loss.
@@ -758,8 +748,11 @@ function decidePrediction(list, lockedMode = null) {
     } else if (latestPattern && (followingSame + followingOpposite) > 0 && !patternTie) {
         // Use the continuation observed after the latest SS/SO/OS/OO pattern.
         predictionMode = followingSame > followingOpposite ? "SAME" : "OPPOSITE";
+    } else if (totalPairPatternSame + totalPairPatternOpposite > 0 && !pairTotalsTie) {
+        // Fallback: total continuation count across SO, OO, OS and SS.
+        predictionMode = totalPairPatternSame > totalPairPatternOpposite ? "SAME" : "OPPOSITE";
     } else if (!globalTie) {
-        // Fallback only when the latest pattern has no usable continuation.
+        // Final fallback: overall SAME vs OPPOSITE pair count.
         predictionMode = sameCount > oppositeCount ? "SAME" : "OPPOSITE";
     } else {
         // Deterministic tie-break when both modes are tied.
@@ -782,6 +775,9 @@ function decidePrediction(list, lockedMode = null) {
         sameCount, oppositeCount, pairCount: pairs.length,
         latestPattern,
         patternCounts,
+        pairPatternTotals,
+        totalPairPatternSame,
+        totalPairPatternOpposite,
         followingSame,
         followingOpposite,
         lastPair: pairs[pairs.length - 1],
@@ -789,175 +785,13 @@ function decidePrediction(list, lockedMode = null) {
         predictionDetails: {
             rule: predictionMode === "SAME" ? "same as reference result" : "opposite of reference result",
             patternRule: latestPattern ? `latest ${latestPattern} pattern continuation` : "no two-pair pattern",
-            selection: followingSame + followingOpposite > 0 && !patternTie ? `longest historical match L${matchedPatternLength}` : `fallback pattern ${fallbackPattern || "N/A"} + full-history count`,
+            selection: followingSame + followingOpposite > 0 && !patternTie ? `longest historical match L${matchedPatternLength}` : totalPairPatternSame + totalPairPatternOpposite > 0 && !pairTotalsTie ? "SO/OO/OS/SS total continuation count" : `fallback pattern ${fallbackPattern || "N/A"} + full-history count`,
             tieBreak: patternTie ? "full-history count or latest pair" : null,
             fallbackPattern,
             matchedPatternLength
         }
     };
 }
-
-
-// ============================================================
-//  16-COMBINATION BET VALIDATOR
-// SAME/OPPOSITE and calculation logic remain separate.
-// ============================================================
-function colorOf(row) {
-    const apiColor = String(row?.color || "").toUpperCase();
-    if (apiColor === "RED" || apiColor === "R") return "R";
-    if (apiColor === "GREEN" || apiColor === "G") return "G";
-
-    const n = Number(row?.number ?? row?.winNumber);
-    if (!Number.isInteger(n) || n < 0 || n > 9) return null;
-    return (n === 0 || n === 5 || n % 2 === 0) ? "R" : "G";
-}
-
-function sizeName(row) {
-    return sizeOf(row) === "B" ? "BIG" : "SMALL";
-}
-
-function check16Combination(list, predictedSize) {
-    if (!Array.isArray(list) || list.length < 2) {
-        return { ok: false, reason: "two results required for 16-combination check" };
-    }
-
-    // list[1] is the older result; list[0] is the latest result.
-    const older = list[1];
-    const latest = list[0];
-    const firstKey = `${colorOf(older)}-${sizeName(older)}`;
-    const secondKey = `${colorOf(latest)}-${sizeName(latest)}`;
-    const pairKey = `${firstKey}|${secondKey}`;
-
-    const expectedByPair = {
-        "R-BIG|R-BIG": "SMALL",
-        "R-BIG|R-SMALL": "SMALL",
-        "R-SMALL|R-BIG": "BIG",
-        "R-SMALL|R-SMALL": "BIG",
-        "R-BIG|G-BIG": "SMALL",
-        "R-BIG|G-SMALL": "SMALL",
-        "R-SMALL|G-BIG": "BIG",
-        "R-SMALL|G-SMALL": "SMALL",
-        "G-BIG|G-BIG": "SMALL",
-        "G-BIG|G-SMALL": "BIG",
-        "G-SMALL|G-BIG": "SMALL",
-        "G-SMALL|G-SMALL": "BIG",
-        "G-BIG|R-BIG": "BIG",
-        "G-BIG|R-SMALL": "BIG",
-        "G-SMALL|R-BIG": "SMALL",
-        "G-SMALL|R-SMALL": "BIG"
-    };
-
-    const expected = expectedByPair[pairKey];
-    const actualPrediction = String(predictedSize || "").toUpperCase();
-    if (!expected) {
-        return { ok: false, reason: `unmapped combination ${pairKey}`, pairKey };
-    }
-
-    return {
-        ok: expected === actualPrediction,
-        reason: expected === actualPrediction ? "16-combination matched" : `${pairKey} expects ${expected}`,
-        pairKey,
-        expected,
-        predicted: actualPrediction,
-        olderPeriod: older.issueNumber,
-        latestPeriod: latest.issueNumber
-    };
-}
-
-// ============================================================
-//  BET-TIME CALCULATION GATE ONLY
-// SAME/OPPOSITE prediction logic above is intentionally unchanged.
-// ============================================================
-function checkBetCalculation(list, expectedPeriod, predictedSize, mode = "NORMAL") {
-    if (!Array.isArray(list) || list.length < 1) {
-        return { ok: false, reason: "history unavailable" };
-    }
-
-    const currentPeriod = String(list[0]?.issueNumber ?? "").trim();
-    const rawResult = list[0]?.number ?? list[0]?.winNumber;
-    const currentResult = Number(rawResult);
-
-    if (!/^\d+$/.test(currentPeriod)) {
-        return { ok: false, reason: "invalid current period" };
-    }
-
-    if (!Number.isInteger(currentResult) || currentResult < 0 || currentResult > 9) {
-        return { ok: false, reason: "invalid current result" };
-    }
-
-    // Previous result 0 => do not place a bet.
-    if (currentResult === 0) {
-        return { ok: false, reason: "previous result is 0" };
-    }
-
-    let nextPeriod;
-    try {
-        nextPeriod = (BigInt(currentPeriod) + 1n).toString();
-    } catch {
-        return { ok: false, reason: "period calculation failed" };
-    }
-
-    if (String(nextPeriod) !== String(expectedPeriod)) {
-        return { ok: false, reason: "period mismatch" };
-    }
-
-    const nextLast3Num = Number(nextPeriod.slice(-3));
-    const answer = nextLast3Num * Math.exp(currentResult);
-
-    if (!Number.isFinite(answer)) {
-        return { ok: false, reason: "calculation is not finite" };
-    }
-
-    const noDecimal = answer.toFixed(12).replace(/[^0-9]/g, "");
-    if (!noDecimal.length) {
-        return { ok: false, reason: "calculation produced no digits" };
-    }
-
-    const first14 = noDecimal.substring(0, 14);
-    const lastDigit = Number(first14.charAt(first14.length - 1));
-    if (!Number.isInteger(lastDigit) || lastDigit < 0 || lastDigit > 9) {
-        return { ok: false, reason: "invalid last digit" };
-    }
-
-    const activeMode = mode === "RECOVERY" ? "RECOVERY" : "NORMAL";
-
-    // NORMAL mapping:   0-4 => SMALL, 5-9 => BIG.
-    // RECOVERY mapping: 0-4 => BIG,   5-9 => SMALL.
-    const calculationPrediction = activeMode === "RECOVERY"
-        ? (lastDigit <= 4 ? "BIG" : "SMALL")
-        : (lastDigit <= 4 ? "SMALL" : "BIG");
-
-    const normalizedPrediction = String(predictedSize || "").toUpperCase();
-    const rangeMatchesPrediction = calculationPrediction === normalizedPrediction;
-
-    if (!rangeMatchesPrediction) {
-        return {
-            ok: false,
-            reason: `${normalizedPrediction || "UNKNOWN"} prediction does not match calculated digit ${lastDigit}`,
-            currentPeriod,
-            currentResult,
-            targetPeriod: nextPeriod,
-            answer,
-            first14,
-            lastDigit,
-            calculationPrediction
-        };
-    }
-
-    return {
-        ok: true,
-        currentPeriod,
-        currentResult,
-        targetPeriod: nextPeriod,
-        answer,
-        first14,
-        lastDigit,
-        calculationPrediction,
-        mode: activeMode,
-        matchedRule: `${activeMode}_RANGE`
-    };
-}
-
 // ============================================================
 //  RESULT HANDLERS — required by checkResult()
 // ============================================================
@@ -975,7 +809,8 @@ async function handleWin(userId, chatId, actual, num, betLevel) {
     pt.winStreak = (pt.winStreak || 0) + 1;
     pt.lossStreak = 0;
     pt.maxW = Math.max(pt.maxW || 0, pt.winStreak);
-    // Unified result dashboard is sent by checkResult().
+    await send(chatId, "✅ BET RESULT: WIN\\nNumber: " + num + "\\nResult: " + actual + "\\nProfit: +₹" + profit.toFixed(2) + "\\nP&L: ₹" + pt.pnl.toFixed(2));
+    await sendSticker(chatId, WIN_STICKER);
 }
 
 async function handleLoss(userId, chatId, actual, num, betLevel) {
@@ -991,7 +826,57 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
     pt.lossStreak = (pt.lossStreak || 0) + 1;
     pt.winStreak = 0;
     pt.maxL = Math.max(pt.maxL || 0, pt.lossStreak);
-    // Unified result dashboard is sent by checkResult().
+    await send(chatId, "❌ BET RESULT: LOSS\\nNumber: " + num + "\\nResult: " + actual + "\\nLoss: -₹" + amount.toFixed(2) + "\\nP&L: ₹" + pt.pnl.toFixed(2));
+    await sendSticker(chatId, LOSS_STICKER);
+}
+
+//  SHADOW ML ANALYSIS — logging only, never controls live bets
+// ============================================================
+function shadowMLPredict(list) {
+    if (!Array.isArray(list) || list.length < 30) return null;
+    const rows = [...list].filter(r => r && r.issueNumber != null).sort((a, b) => BigInt(a.issueNumber) < BigInt(b.issueNumber) ? -1 : 1);
+    if (rows.length < 30) return null;
+
+    const labelAt = i => sizeOf(rows[i]) === "B" ? 1 : 0;
+    function featuresAt(i) {
+        const start = Math.max(0, i - 20);
+        const window = rows.slice(start, i);
+        if (!window.length) return null;
+        const labels = window.map((_, j) => labelAt(start + j));
+        const last = labels[labels.length - 1];
+        let streak = 1;
+        for (let j = labels.length - 2; j >= 0 && labels[j] === last; j--) streak++;
+        let transitions = 0, alternations = 0;
+        for (let j = 1; j < labels.length; j++) {
+            if (labels[j] !== labels[j - 1]) { transitions++; alternations++; }
+        }
+        const recent = labels.slice(-5);
+        const recentRate = recent.reduce((a, b) => a + b, 0) / recent.length;
+        const longRate = labels.reduce((a, b) => a + b, 0) / labels.length;
+        const digitMean = window.reduce((sum, row) => sum + Math.max(0, Math.min(9, Number(row.number) || 0)) / 9, 0) / window.length;
+        return [1, recentRate, longRate, last, (last ? streak : -streak) / 20, alternations / Math.max(1, labels.length - 1), digitMean];
+    }
+    const weights = [0, 0, 0, 0, 0, 0, 0];
+    const sigmoid = z => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
+    const learningRate = 0.08;
+    for (let i = 20; i < rows.length - 1; i++) {
+        const x = featuresAt(i);
+        if (!x) continue;
+        const y = labelAt(i);
+        const p = sigmoid(weights.reduce((sum, w, j) => sum + w * x[j], 0));
+        const error = y - p;
+        for (let j = 0; j < weights.length; j++) weights[j] += learningRate * error * x[j];
+    }
+    const x = featuresAt(rows.length);
+    if (!x) return null;
+    const probabilityBig = sigmoid(weights.reduce((sum, w, j) => sum + w * x[j], 0));
+    return {
+        prediction: probabilityBig >= 0.5 ? "BIG" : "SMALL",
+        probabilityBig,
+        confidence: Math.round(Math.abs(probabilityBig - 0.5) * 200),
+        trainingRows: rows.length - 21,
+        features: x.slice(1).map(v => Number(v.toFixed(4)))
+    };
 }
 
 //  PREDICT LOOP
@@ -1044,37 +929,30 @@ async function runPredict(userId, chatId) {
 
     // Recalculate mode from the latest full-history pattern on every period.
     // Do not pass state.currentMode here; that would permanently lock SAME/OPPOSITE.
-    // Keep SAME/OPPOSITE prediction exactly as before.
-    const signal = decidePrediction(list, null);
-    if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
-
-    // Extra check is performed only for betting. It does not replace or alter signal.mode.
-    const calcGate = checkBetCalculation(list, next, signal.val, state.mode);
-    const combinationGate = check16Combination(list, signal.val);
-    state.currentMode = signal.mode;
-    // Keep the current NORMAL/RECOVERY state for this prediction.
-    state.mode = state.mode === "RECOVERY" ? "RECOVERY" : "NORMAL";
+    const patternSignal = decidePrediction(list, null);
+    const shadowML = shadowMLPredict(list);
+    if (!patternSignal || !shadowML) return setTimeout(()=>runPredict(userId,chatId), 5000);
+    // ML is now the live decision source. The existing pattern signal is retained
+    // only as diagnostic context and does not control the bet direction.
+    const signal = {
+        ...patternSignal,
+        val: shadowML.prediction,
+        mlConfidence: shadowML.confidence,
+        mlProbabilityBig: shadowML.probabilityBig,
+        mlTrainingRows: shadowML.trainingRows,
+        predictionDetails: { ...(patternSignal.predictionDetails || {}), liveDecision: "online-logistic-ML" }
+    };
+    console.log(`[ML LIVE] ${shadowML.prediction} confidence=${shadowML.confidence}% pBig=${shadowML.probabilityBig.toFixed(3)} trained=${shadowML.trainingRows}`);
+    state.currentMode = null;
     state.lastPrediction = signal.val;
+    // Snapshot the level used for this prediction before any result update.
     const predictionLevel = Math.max(1, Number(st.level) || 1);
 
-        let abLine = "🤖 AutoBet: OFF";
-    let canBet = false;
-
-    // Only these two controls decide whether a bet can be placed:
-    // 1) AutoBet must be enabled.
-    // 2) Calculation result must agree with the existing SAME/OPPOSITE signal.
-    // No skip/watch/extra prediction gate is applied here.
-    if (!cfg.enabled) {
-        abLine = "🤖 AutoBet: OFF";
-    } else if (!calcGate.ok) {
-        abLine = `⛔ BET BLOCKED: ${calcGate.reason}`;
-    } else if (!combinationGate.ok) {
-        abLine = `⛔ BET BLOCKED: ${combinationGate.reason}`;
-    } else {
-        canBet = true;
-        const curBet = cfg.customBets[st.level - 1] || (cfg.baseBet * MULT[st.level - 1]);
-        abLine = (st.level > 1 ? "📈 MART " : "💰 BET ") + "L" + st.level + ": ₹" + curBet;
-    }
+    // Every ML decision is eligible for a bet while the bot is running.
+    // `running[userId]` remains the master emergency stop.
+    const canBet = true;
+    const curBet = cfg.customBets[st.level-1] || (cfg.baseBet*MULT[st.level-1]);
+    const abLine = (st.level > 1 ? "📈 ML MART " : "🤖 ML BET ") + "L" + st.level + ": ₹" + curBet + " | C" + signal.mlConfidence + "%";
 
     await send(chatId,
 "╔══════════════════════════╗\n"+
@@ -1082,10 +960,9 @@ async function runPredict(userId, chatId) {
 "╠══════════════════════════╣\n"+
 "║ Period  : "+next.slice(-6)+"\n"+
 "║ Signal  : "+(signal.val==="BIG"?"🔵 BIG":"🟠 SMALL")+"\n"+
-        "║ Mode    : "+state.mode+" | "+signal.mode+" (S:"+signal.sameCount+" / O:"+signal.oppositeCount+")\n"+
+"║ Mode    : "+signal.mode+" (S:"+signal.sameCount+" / O:"+signal.oppositeCount+")\n"+
+        "║ ML      : "+signal.val+" (C:"+signal.mlConfidence+"%)\n"+
         "║ Ref     : "+signal.referencePeriod+" "+signal.referenceSize+"\n"+
-        "║ Calc    : "+calcGate.lastDigit+" → "+calcGate.calculationPrediction+"\n"+
-        "║ Combo   : "+(combinationGate.pairKey || "N/A")+" → "+(combinationGate.expected || "N/A")+"\n"+
         "║ Pattern : "+(signal.history || "N/A")+"\n"+
 "╠══════════════════════════╣\n"+
 "║ "+abLine+"\n"+
@@ -1094,7 +971,7 @@ async function runPredict(userId, chatId) {
     );
 
     let betPlaced = false;
-    if (canBet && calcGate.ok && combinationGate.ok) { 
+    if (canBet) { 
         const result = await placeBet(userId, chatId, next, signal.val, signal.type, st.level);
         if (result && result.ok) {
             betPlaced = true;
@@ -1104,18 +981,7 @@ async function runPredict(userId, chatId) {
         }
     }
 
-    checkResult(
-        userId,
-        chatId,
-        next,
-        signal.val,
-        signal.type,
-        betPlaced,
-        signal.mode,
-        predictionLevel,
-        calcGate,
-        state.mode
-    );
+    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced, signal.mode, predictionLevel);
 }
 // ============================================================
 //  RESULT CHECKER
@@ -1123,7 +989,7 @@ async function runPredict(userId, chatId) {
 
 
 // 4. checkResult - Robust Update & Full UI
-async function checkResult(userId, chatId, target, predicted, predType, betPlaced, usedMode, predictionLevel, calcGate, betMode) {
+async function checkResult(userId, chatId, target, predicted, predType, betPlaced, usedMode, predictionLevel) {
     let tries = 0;
     const cfg = autobetCfg[userId];
     const st = autobetState[userId];
@@ -1151,36 +1017,8 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         // Use the level shown with this prediction, even when AutoBet is OFF or the bet fails.
         const betLevel = Math.max(1, Number(predictionLevel) || Number(st.level) || 1);
 
-        // Keep the requested NORMAL/RECOVERY state after a win and switch it after a loss.
+        // Keep the mode after a win; switch SAME <-> OPPOSITE after a loss.
         updateAfterResult(userId, win, actual, betPlaced, usedMode);
-
-        const resolvedMode = userStates[userId]?.mode || betMode || "NORMAL";
-        const calcDigit = Number(calcGate?.lastDigit);
-        const calcPrediction = calcGate?.calculationPrediction || "N/A";
-        const amount = Number(cfg.customBets?.[Math.max(0, betLevel - 1)] ?? cfg.baseBet ?? 0) || 0;
-        const expectedPnl = win ? amount * 0.90 : -amount;
-        const displayPnl = Number(pt.pnl || 0) + (betPlaced ? expectedPnl : 0);
-        const resultTitle = win ? "WIN ✅" : "LOSS ❌";
-
-        // Detailed dashboard is shown only when the bet was actually placed.
-        if (betPlaced) {
-            await send(chatId,
-            "╔══════════════════════════╗\\n" +
-            `║ RESULT: ${resultTitle}\\n` +
-            "╠══════════════════════════╣\\n" +
-            `║ Period      : ${target}\\n` +
-            `║ Number      : ${num}\\n` +
-            `║ Actual      : ${actual}\\n` +
-            `║ Prediction  : ${predicted || "NONE"}\\n` +
-            `║ Bet Mode    : ${betMode || "NORMAL"}\\n` +
-            `║ Calc Digit  : ${Number.isInteger(calcDigit) ? calcDigit : "N/A"}\\n` +
-            `║ Calc Result : ${calcPrediction}\\n` +
-            `║ Next Mode   : ${resolvedMode}\\n` +
-            `║ Amount      : ₹${amount.toFixed(2)}\\n` +
-            `║ P&L         : ₹${displayPnl.toFixed(2)}\\n` +
-            "╚══════════════════════════╝"
-            );
-        }
 
         const s = stats[userId];
         s.total++;
