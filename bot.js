@@ -799,7 +799,73 @@ function decidePrediction(list, lockedMode = null) {
 
 
 // ============================================================
-// BET-TIME CALCULATION GATE ONLY
+//  16-COMBINATION BET VALIDATOR
+// SAME/OPPOSITE and calculation logic remain separate.
+// ============================================================
+function colorOf(row) {
+    const apiColor = String(row?.color || "").toUpperCase();
+    if (apiColor === "RED" || apiColor === "R") return "R";
+    if (apiColor === "GREEN" || apiColor === "G") return "G";
+
+    const n = Number(row?.number ?? row?.winNumber);
+    if (!Number.isInteger(n) || n < 0 || n > 9) return null;
+    return (n === 0 || n === 5 || n % 2 === 0) ? "R" : "G";
+}
+
+function sizeName(row) {
+    return sizeOf(row) === "B" ? "BIG" : "SMALL";
+}
+
+function check16Combination(list, predictedSize) {
+    if (!Array.isArray(list) || list.length < 2) {
+        return { ok: false, reason: "two results required for 16-combination check" };
+    }
+
+    // list[1] is the older result; list[0] is the latest result.
+    const older = list[1];
+    const latest = list[0];
+    const firstKey = `${colorOf(older)}-${sizeName(older)}`;
+    const secondKey = `${colorOf(latest)}-${sizeName(latest)}`;
+    const pairKey = `${firstKey}|${secondKey}`;
+
+    const expectedByPair = {
+        "R-BIG|R-BIG": "SMALL",
+        "R-BIG|R-SMALL": "SMALL",
+        "R-SMALL|R-BIG": "BIG",
+        "R-SMALL|R-SMALL": "BIG",
+        "R-BIG|G-BIG": "SMALL",
+        "R-BIG|G-SMALL": "SMALL",
+        "R-SMALL|G-BIG": "BIG",
+        "R-SMALL|G-SMALL": "SMALL",
+        "G-BIG|G-BIG": "SMALL",
+        "G-BIG|G-SMALL": "BIG",
+        "G-SMALL|G-BIG": "SMALL",
+        "G-SMALL|G-SMALL": "BIG",
+        "G-BIG|R-BIG": "BIG",
+        "G-BIG|R-SMALL": "BIG",
+        "G-SMALL|R-BIG": "SMALL",
+        "G-SMALL|R-SMALL": "BIG"
+    };
+
+    const expected = expectedByPair[pairKey];
+    const actualPrediction = String(predictedSize || "").toUpperCase();
+    if (!expected) {
+        return { ok: false, reason: `unmapped combination ${pairKey}`, pairKey };
+    }
+
+    return {
+        ok: expected === actualPrediction,
+        reason: expected === actualPrediction ? "16-combination matched" : `${pairKey} expects ${expected}`,
+        pairKey,
+        expected,
+        predicted: actualPrediction,
+        olderPeriod: older.issueNumber,
+        latestPeriod: latest.issueNumber
+    };
+}
+
+// ============================================================
+//  BET-TIME CALCULATION GATE ONLY
 // SAME/OPPOSITE prediction logic above is intentionally unchanged.
 // ============================================================
 function checkBetCalculation(list, expectedPeriod, predictedSize, mode = "NORMAL") {
@@ -984,6 +1050,7 @@ async function runPredict(userId, chatId) {
 
     // Extra check is performed only for betting. It does not replace or alter signal.mode.
     const calcGate = checkBetCalculation(list, next, signal.val, state.mode);
+    const combinationGate = check16Combination(list, signal.val);
     state.currentMode = signal.mode;
     // Keep the current NORMAL/RECOVERY state for this prediction.
     state.mode = state.mode === "RECOVERY" ? "RECOVERY" : "NORMAL";
@@ -1001,6 +1068,8 @@ async function runPredict(userId, chatId) {
         abLine = "🤖 AutoBet: OFF";
     } else if (!calcGate.ok) {
         abLine = `⛔ BET BLOCKED: ${calcGate.reason}`;
+    } else if (!combinationGate.ok) {
+        abLine = `⛔ BET BLOCKED: ${combinationGate.reason}`;
     } else {
         canBet = true;
         const curBet = cfg.customBets[st.level - 1] || (cfg.baseBet * MULT[st.level - 1]);
@@ -1016,6 +1085,7 @@ async function runPredict(userId, chatId) {
         "║ Mode    : "+state.mode+" | "+signal.mode+" (S:"+signal.sameCount+" / O:"+signal.oppositeCount+")\n"+
         "║ Ref     : "+signal.referencePeriod+" "+signal.referenceSize+"\n"+
         "║ Calc    : "+calcGate.lastDigit+" → "+calcGate.calculationPrediction+"\n"+
+        "║ Combo   : "+(combinationGate.pairKey || "N/A")+" → "+(combinationGate.expected || "N/A")+"\n"+
         "║ Pattern : "+(signal.history || "N/A")+"\n"+
 "╠══════════════════════════╣\n"+
 "║ "+abLine+"\n"+
@@ -1024,7 +1094,7 @@ async function runPredict(userId, chatId) {
     );
 
     let betPlaced = false;
-    if (canBet && calcGate.ok) { 
+    if (canBet && calcGate.ok && combinationGate.ok) { 
         const result = await placeBet(userId, chatId, next, signal.val, signal.type, st.level);
         if (result && result.ok) {
             betPlaced = true;
