@@ -809,7 +809,7 @@ async function handleWin(userId, chatId, actual, num, betLevel) {
     pt.winStreak = (pt.winStreak || 0) + 1;
     pt.lossStreak = 0;
     pt.maxW = Math.max(pt.maxW || 0, pt.winStreak);
-    await send(chatId, "✅ BET RESULT: WIN\\nNumber: " + num + "\\nResult: " + actual + "\\nProfit: +₹" + profit.toFixed(2) + "\\nP&L: ₹" + pt.pnl.toFixed(2));
+    await send(chatId, "✅ BET RESULT: WIN\nNumber: " + num + "\\nResult: " + actual + "\\nProfit: +₹" + profit.toFixed(2) + "\\nP&L: ₹" + pt.pnl.toFixed(2));
     await sendSticker(chatId, WIN_STICKER);
 }
 
@@ -826,7 +826,7 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
     pt.lossStreak = (pt.lossStreak || 0) + 1;
     pt.winStreak = 0;
     pt.maxL = Math.max(pt.maxL || 0, pt.lossStreak);
-    await send(chatId, "❌ BET RESULT: LOSS\\nNumber: " + num + "\\nResult: " + actual + "\\nLoss: -₹" + amount.toFixed(2) + "\\nP&L: ₹" + pt.pnl.toFixed(2));
+    await send(chatId, "❌ BET RESULT: LOSS\nNumber: " + num + "\\nResult: " + actual + "\\nLoss: -₹" + amount.toFixed(2) + "\\nP&L: ₹" + pt.pnl.toFixed(2));
     await sendSticker(chatId, LOSS_STICKER);
 }
 
@@ -980,26 +980,27 @@ async function runPredict(userId, chatId) {
     state.currentMode = null;
     state.lastPrediction = signal.val;
     // Snapshot the level used for this prediction before any result update.
-    const predictionLevel = Math.max(1, Number(st.level) || 1);
+    // The martingale state is the single source of truth for the level.
+    // Never reset the displayed/bet level based on NORMAL or RECOVERY mode.
+    const maxLevel = Math.max(1, Math.min(10, Number(cfg.maxLvl) || 1));
+    const predictionLevel = Math.max(1, Math.min(maxLevel, Number(st.level) || 1));
 
     // Only the explicit AutoBet toggle controls whether a bet is sent.
     // `running[userId]` remains the master emergency stop.
     const canBet = cfg.enabled === true;
-    const effectiveLevel = signal.calculationMode === "RECOVERY" ? Math.max(1, Number(st.level) || 1) : 1;
-    const curBet = cfg.customBets[effectiveLevel-1] || (cfg.baseBet*MULT[effectiveLevel-1]);
-    const abLine = (signal.calculationMode === "RECOVERY" ? "📈 RECOVERY " : "🤖 NORMAL ") + "L" + effectiveLevel + ": ₹" + curBet + " | C" + signal.calculationConfidence + "%";
+    const effectiveLevel = predictionLevel;
+    const curBet = Number(cfg.customBets[effectiveLevel - 1] || (cfg.baseBet * MULT[effectiveLevel - 1]) || 0);
+    const abLine = (canBet ? "💰 BET " : "👀 WATCH ") + "L" + effectiveLevel + ": ₹" + curBet;
 
+    // User-facing prediction box: expose only the period, signal and active level.
+    // All calculation/model details remain server-side in logs and internal state.
     await send(chatId,
 "╔══════════════════════════╗\n"+
 "║   👑 EARN WITH ME AI    ║\n"+
 "╠══════════════════════════╣\n"+
 "║ Period  : "+next.slice(-6)+"\n"+
 "║ Signal  : "+(signal.val==="BIG"?"🔵 BIG":"🟠 SMALL")+"\n"+
-        "║ Mode    : "+signal.mode+" (Current:"+signal.currentMode+" Ctx:"+(signal.matchedContext || "N/A")+")\n"+
-        "║ Calc    : "+signal.val+" (C:"+signal.calculationConfidence+"% "+signal.calculationMode+")\n"+
-        "║ Calc    : "+signal.calculation+"\n"+
-        "║ Digit   : "+signal.lastDigit+" | Match L"+signal.matchedLength+"\n"+
-        "║ Pattern : "+(signal.history || "N/A")+"\n"+
+"║ Level   : L"+effectiveLevel+"\n"+
 "╠══════════════════════════╣\n"+
 "║ "+abLine+"\n"+
 "╚══════════════════════════╝",
@@ -1011,7 +1012,7 @@ async function runPredict(userId, chatId) {
         const result = await placeBet(userId, chatId, next, signal.val, signal.type, effectiveLevel);
         if (result && result.ok) {
             betPlaced = true;
-            await send(chatId, "✅ Bet Success! ₹" + result.amt + " L" + effectiveLevel + " " + signal.calculationMode + "\n⏳ Checking result...");
+            await send(chatId, "✅ Bet placed successfully | L" + effectiveLevel + "\n⏳ Checking result...");
         } else if (result && !result.ok) {
             await send(chatId, "❌ Bet Failed: " + (result.msg || "Unknown error"));
         }
@@ -1051,7 +1052,8 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         
         const win = predicted === actual;
         // Use the level shown with this prediction, even when AutoBet is OFF or the bet fails.
-        const betLevel = Math.max(1, Number(predictionLevel) || Number(st.level) || 1);
+        const maxBetLevel = Math.max(1, Math.min(10, Number(cfg.maxLvl) || 1));
+        const betLevel = Math.max(1, Math.min(maxBetLevel, Number(predictionLevel) || Number(st.level) || 1));
 
         // Keep the mode after a win; switch SAME <-> OPPOSITE after a loss.
         updateAfterResult(userId, win, actual, betPlaced, usedMode);
