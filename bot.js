@@ -830,60 +830,62 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
     await sendSticker(chatId, LOSS_STICKER);
 }
 
-//  SHADOW ML ANALYSIS — logging only, never controls live bets
+//  EXISTING CALCULATION ONLY
+//  The Luciferapi SAME/OPPOSITE analysis below is the sole decision source.
 // ============================================================
-function shadowMLPredict(list) {
-    if (!Array.isArray(list) || list.length < 30) return null;
-    const rows = [...list].filter(r => r && r.issueNumber != null).sort((a, b) => BigInt(a.issueNumber) < BigInt(b.issueNumber) ? -1 : 1);
-    if (rows.length < 30) return null;
 
-    const labelAt = i => sizeOf(rows[i]) === "B" ? 1 : 0;
-    function featuresAt(i) {
-        const start = Math.max(0, i - 20);
-        const window = rows.slice(start, i);
-        if (!window.length) return null;
-        const labels = window.map((_, j) => labelAt(start + j));
-        const last = labels[labels.length - 1];
-        let streak = 1;
-        for (let j = labels.length - 2; j >= 0 && labels[j] === last; j--) streak++;
-        let transitions = 0, alternations = 0;
-        for (let j = 1; j < labels.length; j++) {
-            if (labels[j] !== labels[j - 1]) { transitions++; alternations++; }
-        }
-        const recent = labels.slice(-5);
-        const recentRate = recent.reduce((a, b) => a + b, 0) / recent.length;
-        const longRate = labels.reduce((a, b) => a + b, 0) / labels.length;
-        const digitMean = window.reduce((sum, row) => sum + Math.max(0, Math.min(9, Number(row.number) || 0)) / 9, 0) / window.length;
-        return [1, recentRate, longRate, last, (last ? streak : -streak) / 20, alternations / Math.max(1, labels.length - 1), digitMean];
+//  FORMULA-ONLY HISTORICAL ML CALIBRATION
+//  Uses only the supplied period/result calculation and Luciferapi history.
+// ============================================================
+function formulaMLPredict(list) {
+    if (!Array.isArray(list) || list.length < 12) return null;
+    const rows = [...list].filter(r => r && r.issueNumber != null && Number.isInteger(Number(r.number)))
+        .sort((a, b) => BigInt(a.issueNumber) < BigInt(b.issueNumber) ? -1 : 1);
+    if (rows.length < 12) return null;
+
+    function formulaFor(row) {
+        const currentPeriod = String(row.issueNumber);
+        const currentResult = Number(row.number);
+        if (!Number.isInteger(currentResult) || currentResult < 1 || currentResult > 9) return null;
+        const nextPeriod = (BigInt(currentPeriod) + 1n).toString();
+        const nextLast3 = Number(nextPeriod.slice(-3));
+        const answer = nextLast3 * Math.exp(currentResult);
+        const first14 = answer.toString().replace('.', '').substring(0, 14);
+        const lastDigit = Number(first14.charAt(first14.length - 1));
+        if (!Number.isInteger(lastDigit)) return null;
+        return { nextPeriod, lastDigit, basePrediction: lastDigit <= 4 ? "SMALL" : "BIG" };
     }
-    const weights = [0, 0, 0, 0, 0, 0, 0];
-    const sigmoid = z => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
-    const learningRate = 0.08;
-    let validationCorrect = 0;
-    let validationTotal = 0;
-    for (let i = 20; i < rows.length - 1; i++) {
-        const x = featuresAt(i);
-        if (!x) continue;
-        const y = labelAt(i);
-        const p = sigmoid(weights.reduce((sum, w, j) => sum + w * x[j], 0));
-        if ((p >= 0.5 ? 1 : 0) === y) validationCorrect++;
-        validationTotal++;
-        const error = y - p;
-        for (let j = 0; j < weights.length; j++) weights[j] += learningRate * error * x[j];
+
+    let correct = 0, total = 0;
+    for (let i = 0; i < rows.length - 1; i++) {
+        const calc = formulaFor(rows[i]);
+        if (!calc || BigInt(rows[i + 1].issueNumber) !== BigInt(calc.nextPeriod)) continue;
+        const actual = Number(rows[i + 1].number) >= 5 ? "BIG" : "SMALL";
+        if (calc.basePrediction === actual) correct++;
+        total++;
     }
-    const x = featuresAt(rows.length);
-    if (!x) return null;
-    const probabilityBig = sigmoid(weights.reduce((sum, w, j) => sum + w * x[j], 0));
-    const validationAccuracy = validationTotal ? validationCorrect / validationTotal : 0.5;
-    const mode = validationAccuracy < 0.52 ? "RECOVERY" : "NORMAL";
+    const latest = rows[rows.length - 1];
+    const current = formulaFor(latest);
+    if (!current) return null;
+    const accuracy = total ? correct / total : 0.5;
+    const mode = accuracy >= 0.5 ? "NORMAL" : "RECOVERY";
+    const prediction = mode === "RECOVERY"
+        ? (current.basePrediction === "BIG" ? "SMALL" : "BIG")
+        : current.basePrediction;
     return {
-        prediction: probabilityBig >= 0.5 ? "BIG" : "SMALL",
-        probabilityBig,
-        confidence: Math.round(Math.abs(probabilityBig - 0.5) * 200),
-        validationAccuracy,
+        type: "SIZE",
+        val: prediction,
         mode,
-        trainingRows: rows.length - 21,
-        features: x.slice(1).map(v => Number(v.toFixed(4)))
+        calculation: "nextLast3 × exp(currentResult) → first14 → lastDigit",
+        currentPeriod: latest.issueNumber,
+        targetPeriod: current.nextPeriod,
+        currentResult: Number(latest.number),
+        lastDigit: current.lastDigit,
+        basePrediction: current.basePrediction,
+        accuracy,
+        confidence: Math.round(Math.max(accuracy, 1 - accuracy) * 100),
+        correct,
+        total
     };
 }
 
@@ -935,22 +937,13 @@ async function runPredict(userId, chatId) {
     if(sentPeriods[userId].has(next)) return setTimeout(()=>runPredict(userId,chatId), 2000);
     sentPeriods[userId].add(next);
 
-    // Recalculate mode from the latest full-history pattern on every period.
-    // Do not pass state.currentMode here; that would permanently lock SAME/OPPOSITE.
-    const patternSignal = decidePrediction(list, null);
-    const shadowML = shadowMLPredict(list);
-    if (!patternSignal || !shadowML) return setTimeout(()=>runPredict(userId,chatId), 5000);
-    // ML is now the live decision source. The existing pattern signal is retained
-    // only as diagnostic context and does not control the bet direction.
-    const signal = {
-        ...patternSignal,
-        val: shadowML.prediction,
-        mlConfidence: shadowML.confidence,
-        mlProbabilityBig: shadowML.probabilityBig,
-        mlTrainingRows: shadowML.trainingRows,
-        predictionDetails: { ...(patternSignal.predictionDetails || {}), liveDecision: "online-logistic-ML" }
-    };
-    console.log(`[ML LIVE] ${shadowML.prediction} confidence=${shadowML.confidence}% pBig=${shadowML.probabilityBig.toFixed(3)} trained=${shadowML.trainingRows}`);
+    // Live decision uses only the supplied formula calibrated against old Luciferapi results.
+    const signal = formulaMLPredict(list);
+    if (!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
+    signal.calculationMode = signal.mode;
+    signal.calculationConfidence = signal.confidence;
+    signal.predictionDetails = { liveDecision: "formula-only-historical-calibration", calculation: signal.calculation };
+    console.log(`[FORMULA ML LIVE] ${signal.val} mode=${signal.mode} accuracy=${(signal.accuracy * 100).toFixed(1)}% digit=${signal.lastDigit} samples=${signal.total}`);
     state.currentMode = null;
     state.lastPrediction = signal.val;
     // Snapshot the level used for this prediction before any result update.
@@ -959,9 +952,9 @@ async function runPredict(userId, chatId) {
     // Only the explicit AutoBet toggle controls whether a bet is sent.
     // `running[userId]` remains the master emergency stop.
     const canBet = cfg.enabled === true;
-    const effectiveLevel = shadowML.mode === "RECOVERY" ? Math.max(1, Number(st.level) || 1) : 1;
+    const effectiveLevel = signal.calculationMode === "RECOVERY" ? Math.max(1, Number(st.level) || 1) : 1;
     const curBet = cfg.customBets[effectiveLevel-1] || (cfg.baseBet*MULT[effectiveLevel-1]);
-    const abLine = (shadowML.mode === "RECOVERY" ? "📈 ML RECOVERY " : "🤖 ML NORMAL ") + "L" + effectiveLevel + ": ₹" + curBet + " | C" + signal.mlConfidence + "%";
+    const abLine = (signal.calculationMode === "RECOVERY" ? "📈 RECOVERY " : "🤖 NORMAL ") + "L" + effectiveLevel + ": ₹" + curBet + " | C" + signal.calculationConfidence + "%";
 
     await send(chatId,
 "╔══════════════════════════╗\n"+
@@ -970,7 +963,7 @@ async function runPredict(userId, chatId) {
 "║ Period  : "+next.slice(-6)+"\n"+
 "║ Signal  : "+(signal.val==="BIG"?"🔵 BIG":"🟠 SMALL")+"\n"+
 "║ Mode    : "+signal.mode+" (S:"+signal.sameCount+" / O:"+signal.oppositeCount+")\n"+
-        "║ ML      : "+signal.val+" (C:"+signal.mlConfidence+"% "+shadowML.mode+" Acc:"+(shadowML.validationAccuracy*100).toFixed(1)+"%)\n"+
+        "║ Calc    : "+signal.val+" (C:"+signal.calculationConfidence+"% "+signal.calculationMode+")\n"+
         "║ Ref     : "+signal.referencePeriod+" "+signal.referenceSize+"\n"+
         "║ Pattern : "+(signal.history || "N/A")+"\n"+
 "╠══════════════════════════╣\n"+
@@ -984,7 +977,7 @@ async function runPredict(userId, chatId) {
         const result = await placeBet(userId, chatId, next, signal.val, signal.type, effectiveLevel);
         if (result && result.ok) {
             betPlaced = true;
-            await send(chatId, "✅ Bet Success! ₹" + result.amt + " L" + effectiveLevel + " " + shadowML.mode + "\n⏳ Checking result...");
+            await send(chatId, "✅ Bet Success! ₹" + result.amt + " L" + effectiveLevel + " " + signal.calculationMode + "\n⏳ Checking result...");
         } else if (result && !result.ok) {
             await send(chatId, "❌ Bet Failed: " + (result.msg || "Unknown error"));
         }
