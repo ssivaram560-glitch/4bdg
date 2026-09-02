@@ -859,21 +859,29 @@ function shadowMLPredict(list) {
     const weights = [0, 0, 0, 0, 0, 0, 0];
     const sigmoid = z => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
     const learningRate = 0.08;
+    let validationCorrect = 0;
+    let validationTotal = 0;
     for (let i = 20; i < rows.length - 1; i++) {
         const x = featuresAt(i);
         if (!x) continue;
         const y = labelAt(i);
         const p = sigmoid(weights.reduce((sum, w, j) => sum + w * x[j], 0));
+        if ((p >= 0.5 ? 1 : 0) === y) validationCorrect++;
+        validationTotal++;
         const error = y - p;
         for (let j = 0; j < weights.length; j++) weights[j] += learningRate * error * x[j];
     }
     const x = featuresAt(rows.length);
     if (!x) return null;
     const probabilityBig = sigmoid(weights.reduce((sum, w, j) => sum + w * x[j], 0));
+    const validationAccuracy = validationTotal ? validationCorrect / validationTotal : 0.5;
+    const mode = validationAccuracy < 0.52 ? "RECOVERY" : "NORMAL";
     return {
         prediction: probabilityBig >= 0.5 ? "BIG" : "SMALL",
         probabilityBig,
         confidence: Math.round(Math.abs(probabilityBig - 0.5) * 200),
+        validationAccuracy,
+        mode,
         trainingRows: rows.length - 21,
         features: x.slice(1).map(v => Number(v.toFixed(4)))
     };
@@ -948,11 +956,12 @@ async function runPredict(userId, chatId) {
     // Snapshot the level used for this prediction before any result update.
     const predictionLevel = Math.max(1, Number(st.level) || 1);
 
-    // Every ML decision is eligible for a bet while the bot is running.
+    // Only the explicit AutoBet toggle controls whether a bet is sent.
     // `running[userId]` remains the master emergency stop.
-    const canBet = true;
-    const curBet = cfg.customBets[st.level-1] || (cfg.baseBet*MULT[st.level-1]);
-    const abLine = (st.level > 1 ? "📈 ML MART " : "🤖 ML BET ") + "L" + st.level + ": ₹" + curBet + " | C" + signal.mlConfidence + "%";
+    const canBet = cfg.enabled === true;
+    const effectiveLevel = shadowML.mode === "RECOVERY" ? Math.max(1, Number(st.level) || 1) : 1;
+    const curBet = cfg.customBets[effectiveLevel-1] || (cfg.baseBet*MULT[effectiveLevel-1]);
+    const abLine = (shadowML.mode === "RECOVERY" ? "📈 ML RECOVERY " : "🤖 ML NORMAL ") + "L" + effectiveLevel + ": ₹" + curBet + " | C" + signal.mlConfidence + "%";
 
     await send(chatId,
 "╔══════════════════════════╗\n"+
@@ -961,7 +970,7 @@ async function runPredict(userId, chatId) {
 "║ Period  : "+next.slice(-6)+"\n"+
 "║ Signal  : "+(signal.val==="BIG"?"🔵 BIG":"🟠 SMALL")+"\n"+
 "║ Mode    : "+signal.mode+" (S:"+signal.sameCount+" / O:"+signal.oppositeCount+")\n"+
-        "║ ML      : "+signal.val+" (C:"+signal.mlConfidence+"%)\n"+
+        "║ ML      : "+signal.val+" (C:"+signal.mlConfidence+"% "+shadowML.mode+" Acc:"+(shadowML.validationAccuracy*100).toFixed(1)+"%)\n"+
         "║ Ref     : "+signal.referencePeriod+" "+signal.referenceSize+"\n"+
         "║ Pattern : "+(signal.history || "N/A")+"\n"+
 "╠══════════════════════════╣\n"+
@@ -972,16 +981,16 @@ async function runPredict(userId, chatId) {
 
     let betPlaced = false;
     if (canBet) { 
-        const result = await placeBet(userId, chatId, next, signal.val, signal.type, st.level);
+        const result = await placeBet(userId, chatId, next, signal.val, signal.type, effectiveLevel);
         if (result && result.ok) {
             betPlaced = true;
-            await send(chatId, "✅ Bet Success! ₹" + result.amt + " L" + st.level + "\n⏳ Checking result...");
+            await send(chatId, "✅ Bet Success! ₹" + result.amt + " L" + effectiveLevel + " " + shadowML.mode + "\n⏳ Checking result...");
         } else if (result && !result.ok) {
             await send(chatId, "❌ Bet Failed: " + (result.msg || "Unknown error"));
         }
     }
 
-    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced, signal.mode, predictionLevel);
+    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced, signal.mode, effectiveLevel);
 }
 // ============================================================
 //  RESULT CHECKER
