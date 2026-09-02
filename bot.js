@@ -856,26 +856,57 @@ function formulaMLPredict(list) {
         return { nextPeriod, lastDigit, basePrediction: lastDigit <= 4 ? "SMALL" : "BIG" };
     }
 
+    // Build the historical NORMAL/RECOVERY sequence from the supplied formula.
+    const historicalModes = [];
     let correct = 0, total = 0;
     for (let i = 0; i < rows.length - 1; i++) {
         const calc = formulaFor(rows[i]);
         if (!calc || BigInt(rows[i + 1].issueNumber) !== BigInt(calc.nextPeriod)) continue;
         const actual = Number(rows[i + 1].number) >= 5 ? "BIG" : "SMALL";
-        if (calc.basePrediction === actual) correct++;
+        const mode = calc.basePrediction === actual ? "NORMAL" : "RECOVERY";
+        historicalModes.push(mode);
+        if (mode === "NORMAL") correct++;
         total++;
     }
     const latest = rows[rows.length - 1];
     const current = formulaFor(latest);
-    if (!current) return null;
+    if (!current || historicalModes.length < 2) return null;
+
+    // No aggregate count is used. Match the longest recent mode context
+    // against its most recent earlier occurrence and take that occurrence's
+    // immediate next mode as the current-period mode.
+    const currentMode = historicalModes[historicalModes.length - 1];
+    let nextMode = null;
+    let matchedContext = "";
+    let matchedLength = 0;
+    const maxContext = Math.min(10, historicalModes.length - 1);
+    for (let length = maxContext; length >= 1 && !nextMode; length--) {
+        const candidate = historicalModes.slice(-length).join(">");
+        for (let i = historicalModes.length - length - 1; i >= 0; i--) {
+            const prior = historicalModes.slice(i, i + length).join(">");
+            if (prior !== candidate) continue;
+            nextMode = historicalModes[i + length];
+            matchedContext = candidate;
+            matchedLength = length;
+            break;
+        }
+    }
+    if (!nextMode) {
+        // Deterministic no-match fallback: alternate the current mode.
+        nextMode = currentMode === "NORMAL" ? "RECOVERY" : "NORMAL";
+        matchedContext = currentMode;
+        matchedLength = 1;
+    }
+
     const accuracy = total ? correct / total : 0.5;
-    const mode = accuracy >= 0.5 ? "NORMAL" : "RECOVERY";
-    const prediction = mode === "RECOVERY"
+    const prediction = nextMode === "RECOVERY"
         ? (current.basePrediction === "BIG" ? "SMALL" : "BIG")
         : current.basePrediction;
     return {
         type: "SIZE",
         val: prediction,
-        mode,
+        mode: nextMode,
+        currentMode,
         calculation: "nextLast3 × exp(currentResult) → first14 → lastDigit",
         currentPeriod: latest.issueNumber,
         targetPeriod: current.nextPeriod,
@@ -885,7 +916,9 @@ function formulaMLPredict(list) {
         accuracy,
         confidence: Math.round(Math.max(accuracy, 1 - accuracy) * 100),
         correct,
-        total
+        total,
+        matchedContext,
+        matchedLength
     };
 }
 
@@ -962,9 +995,10 @@ async function runPredict(userId, chatId) {
 "╠══════════════════════════╣\n"+
 "║ Period  : "+next.slice(-6)+"\n"+
 "║ Signal  : "+(signal.val==="BIG"?"🔵 BIG":"🟠 SMALL")+"\n"+
-"║ Mode    : "+signal.mode+" (S:"+signal.sameCount+" / O:"+signal.oppositeCount+")\n"+
+        "║ Mode    : "+signal.mode+" (Current:"+signal.currentMode+" Ctx:"+(signal.matchedContext || "N/A")+")\n"+
         "║ Calc    : "+signal.val+" (C:"+signal.calculationConfidence+"% "+signal.calculationMode+")\n"+
-        "║ Ref     : "+signal.referencePeriod+" "+signal.referenceSize+"\n"+
+        "║ Calc    : "+signal.calculation+"\n"+
+        "║ Digit   : "+signal.lastDigit+" | Match L"+signal.matchedLength+"\n"+
         "║ Pattern : "+(signal.history || "N/A")+"\n"+
 "╠══════════════════════════╣\n"+
 "║ "+abLine+"\n"+
