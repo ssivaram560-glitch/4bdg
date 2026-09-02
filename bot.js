@@ -625,7 +625,17 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
     st.consecutiveLoss = (Number(st.consecutiveLoss) || 0) + 1;
     st.inMart = true;
     const maxLevel = Math.max(1, Number(cfg.maxLvl) || 1);
-    st.level = Math.min((Number(st.level) || 1) + 1, maxLevel);
+    const currentLevel = Math.max(1, Number(st.level) || 1);
+
+    // Do not repeat the last custom-bet amount forever. Once the maximum
+    // level loses, close that martingale cycle and start again from L1.
+    if (currentLevel >= maxLevel) {
+        st.level = 1;
+        st.consecutiveLoss = 0;
+        st.inMart = false;
+    } else {
+        st.level = currentLevel + 1;
+    }
 
     // Change mode after TWO consecutive placed-bet losses.
     if (st.consecutiveLoss >= 2) {
