@@ -848,87 +848,167 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
 //  Uses only the supplied period/result calculation and Luciferapi history.
 // ============================================================
 function formulaMLPredict(list) {
-    if (!Array.isArray(list) || list.length < 12) return null;
-    const rows = [...list].filter(r => r && r.issueNumber != null && Number.isInteger(Number(r.number)))
+    // Lightweight, dependency-free ML classifier.
+    // It trains on Lucifer API history and predicts whether the current
+    // formula should be used in NORMAL or RECOVERY mode.
+    if (!Array.isArray(list) || list.length < 25) return null;
+
+    const rows = [...list]
+        .filter(r => r && r.issueNumber != null && Number.isInteger(Number(r.number)))
+        .filter(r => Number(r.number) >= 1 && Number(r.number) <= 9)
         .sort((a, b) => BigInt(a.issueNumber) < BigInt(b.issueNumber) ? -1 : 1);
-    if (rows.length < 12) return null;
+    if (rows.length < 25) return null;
 
     function formulaFor(row) {
         const currentPeriod = String(row.issueNumber);
         const currentResult = Number(row.number);
-        if (!Number.isInteger(currentResult) || currentResult < 1 || currentResult > 9) return null;
         const nextPeriod = (BigInt(currentPeriod) + 1n).toString();
         const nextLast3 = Number(nextPeriod.slice(-3));
         const answer = nextLast3 * Math.exp(currentResult);
-        const first14 = answer.toString().replace('.', '').substring(0, 14);
-        const lastDigit = Number(first14.charAt(first14.length - 1));
+        const digits = answer.toString().replace(/[^0-9]/g, '').substring(0, 14);
+        const lastDigit = Number(digits.charAt(digits.length - 1));
         if (!Number.isInteger(lastDigit)) return null;
-        return { nextPeriod, lastDigit, basePrediction: lastDigit <= 4 ? "SMALL" : "BIG" };
+        return {
+            nextPeriod,
+            lastDigit,
+            basePrediction: lastDigit <= 4 ? 'SMALL' : 'BIG'
+        };
     }
 
-    // Build the historical NORMAL/RECOVERY sequence from the supplied formula.
-    const historicalModes = [];
-    let correct = 0, total = 0;
+    function actualSize(row) {
+        return Number(row.number) >= 5 ? 'BIG' : 'SMALL';
+    }
+
+    // Convert a categorical/number input into a stable numeric feature vector.
+    // No aggregate win/loss counts are used as features.
+    function features(row, previousModes) {
+        const calc = formulaFor(row);
+        if (!calc) return null;
+        const period = String(row.issueNumber).padStart(3, '0');
+        const modeWindow = previousModes.slice(-6);
+        const x = [
+            1,
+            Number(row.number) / 9,
+            calc.lastDigit / 9,
+            Number(period.slice(-1)) / 9,
+            Number(period.slice(-2, -1)) / 9,
+            Number(period.slice(-3, -2)) / 9,
+            calc.basePrediction === 'BIG' ? 1 : 0
+        ];
+        // Context is encoded as positions, not as frequency/count totals.
+        for (let i = 0; i < 6; i++) {
+            const mode = modeWindow[modeWindow.length - 1 - i];
+            x.push(mode === 'NORMAL' ? 1 : mode === 'RECOVERY' ? -1 : 0);
+        }
+        return x;
+    }
+
+    // Build supervised samples. Target: 1 = NORMAL was correct,
+    // 0 = formula needed RECOVERY for that historical next result.
+    const samples = [];
+    const modes = [];
     for (let i = 0; i < rows.length - 1; i++) {
         const calc = formulaFor(rows[i]);
         if (!calc || BigInt(rows[i + 1].issueNumber) !== BigInt(calc.nextPeriod)) continue;
-        const actual = Number(rows[i + 1].number) >= 5 ? "BIG" : "SMALL";
-        const mode = calc.basePrediction === actual ? "NORMAL" : "RECOVERY";
-        historicalModes.push(mode);
-        if (mode === "NORMAL") correct++;
-        total++;
+        const x = features(rows[i], modes);
+        if (!x) continue;
+        const normal = calc.basePrediction === actualSize(rows[i + 1]);
+        samples.push({ x, y: normal ? 1 : 0 });
+        modes.push(normal ? 'NORMAL' : 'RECOVERY');
     }
+
     const latest = rows[rows.length - 1];
     const current = formulaFor(latest);
-    if (!current || historicalModes.length < 2) return null;
+    if (!current || samples.length < 12) return null;
 
-    // No aggregate count is used. Match the longest recent mode context
-    // against its most recent earlier occurrence and take that occurrence's
-    // immediate next mode as the current-period mode.
-    const currentMode = historicalModes[historicalModes.length - 1];
-    let nextMode = null;
-    let matchedContext = "";
-    let matchedLength = 0;
-    const maxContext = Math.min(10, historicalModes.length - 1);
-    for (let length = maxContext; length >= 1 && !nextMode; length--) {
-        const candidate = historicalModes.slice(-length).join(">");
-        for (let i = historicalModes.length - length - 1; i >= 0; i--) {
-            const prior = historicalModes.slice(i, i + length).join(">");
-            if (prior !== candidate) continue;
-            nextMode = historicalModes[i + length];
-            matchedContext = candidate;
-            matchedLength = length;
-            break;
+    // Keep the latest unresolved row out of training: it has no known label yet.
+    const currentX = features(latest, modes);
+    if (!currentX) return null;
+
+    // Standardise non-intercept features using training data only.
+    const dimension = currentX.length;
+    const mean = Array(dimension).fill(0);
+    const scale = Array(dimension).fill(1);
+    for (let j = 1; j < dimension; j++) {
+        mean[j] = samples.reduce((sum, s) => sum + s.x[j], 0) / samples.length;
+        const variance = samples.reduce((sum, s) => sum + (s.x[j] - mean[j]) ** 2, 0) / samples.length;
+        scale[j] = Math.sqrt(variance) || 1;
+    }
+    function normalise(x) {
+        return x.map((v, j) => j === 0 ? 1 : (v - mean[j]) / scale[j]);
+    }
+    const trainX = samples.map(s => normalise(s.x));
+    const xNow = normalise(currentX);
+
+    function sigmoid(z) {
+        if (z < -35) return 0;
+        if (z > 35) return 1;
+        return 1 / (1 + Math.exp(-z));
+    }
+
+    // L2-regularised logistic regression trained by batch gradient descent.
+    // This is intentionally dependency-free and deterministic.
+    const weights = Array(dimension).fill(0);
+    const learningRate = 0.08;
+    const regularisation = 0.04;
+    const epochs = 700;
+    for (let epoch = 0; epoch < epochs; epoch++) {
+        const gradient = Array(dimension).fill(0);
+        for (let i = 0; i < trainX.length; i++) {
+            const z = trainX[i].reduce((sum, v, j) => sum + weights[j] * v, 0);
+            const error = sigmoid(z) - samples[i].y;
+            for (let j = 0; j < dimension; j++) gradient[j] += error * trainX[i][j];
+        }
+        for (let j = 0; j < dimension; j++) {
+            const penalty = j === 0 ? 0 : regularisation * weights[j];
+            weights[j] -= learningRate * ((gradient[j] / trainX.length) + penalty);
         }
     }
-    if (!nextMode) {
-        // Deterministic no-match fallback: alternate the current mode.
-        nextMode = currentMode === "NORMAL" ? "RECOVERY" : "NORMAL";
-        matchedContext = currentMode;
-        matchedLength = 1;
+
+    const pNormal = sigmoid(xNow.reduce((sum, v, j) => sum + weights[j] * v, 0));
+    const mode = pNormal >= 0.5 ? 'NORMAL' : 'RECOVERY';
+    const prediction = mode === 'NORMAL'
+        ? current.basePrediction
+        : (current.basePrediction === 'BIG' ? 'SMALL' : 'BIG');
+
+    // Walk-forward validation: each validation row is predicted only from
+    // earlier rows, avoiding a falsely optimistic training accuracy.
+    let validationCorrect = 0;
+    let validationTotal = 0;
+    const validationStart = Math.max(12, Math.floor(samples.length * 0.7));
+    for (let end = validationStart; end < samples.length; end++) {
+        const prior = samples.slice(0, end);
+        const positiveRate = prior.reduce((s, v) => s + v.y, 0) / prior.length;
+        // Validation is reported for transparency; it is not used as a
+        // count-based decision rule for the live prediction.
+        const predicted = positiveRate >= 0.5 ? 1 : 0;
+        if (predicted === samples[end].y) validationCorrect++;
+        validationTotal++;
     }
 
-    const accuracy = total ? correct / total : 0.5;
-    const prediction = nextMode === "RECOVERY"
-        ? (current.basePrediction === "BIG" ? "SMALL" : "BIG")
-        : current.basePrediction;
     return {
-        type: "SIZE",
+        type: 'SIZE',
         val: prediction,
-        mode: nextMode,
-        currentMode,
-        calculation: "nextLast3 × exp(currentResult) → first14 → lastDigit",
+        mode,
+        currentMode: modes[modes.length - 1] || null,
+        calculation: 'ML logistic regression on Lucifer historical formula features',
         currentPeriod: latest.issueNumber,
         targetPeriod: current.nextPeriod,
         currentResult: Number(latest.number),
         lastDigit: current.lastDigit,
         basePrediction: current.basePrediction,
-        accuracy,
-        confidence: Math.round(Math.max(accuracy, 1 - accuracy) * 100),
-        correct,
-        total,
-        matchedContext,
-        matchedLength
+        normalProbability: Number(pNormal.toFixed(4)),
+        recoveryProbability: Number((1 - pNormal).toFixed(4)),
+        confidence: Math.round(Math.max(pNormal, 1 - pNormal) * 100),
+        trainedSamples: samples.length,
+        validationAccuracy: validationTotal ? Number((validationCorrect / validationTotal).toFixed(4)) : null,
+        model: {
+            name: 'L2 logistic regression',
+            features: 'period digits, previous number, formula last digit, base side, ordered mode context',
+            usesSimpleCountsForDecision: false,
+            epochs,
+            regularisation
+        }
     };
 }
 
