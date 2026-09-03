@@ -932,32 +932,6 @@ function formulaMLPredict(list) {
     };
 }
 
-// Local copy of the Netlify HTML page's 5-result prediction logic.
-function htmlPatternPredict(list) {
-    if (!Array.isArray(list)) return null;
-    const rows=list.slice().sort((a,b)=>{
-        const ai=String(a?.issueNumber??a?.issue??a?.period??""), bi=String(b?.issueNumber??b?.issue??b?.period??"");
-        if (/^\d+$/.test(ai)&&/^\d+$/.test(bi)) return ai.length!==bi.length ? bi.length-ai.length : bi.localeCompare(ai);
-        return 0;
-    }).map((item,index)=>{
-        const raw=item?.number??item?.result??item?.resultNumber??item?.num??item?.value??item?.winNumber;
-        const number=Number.parseInt(String(raw??"").replace(/\D/g,"").slice(-1),10);
-        return {number,issue:String(item?.issueNumber??item?.issue??item?.period??item?.periodNumber??item?.id??index)};
-    }).filter(row=>Number.isInteger(row.number)&&row.number>=0&&row.number<=9);
-    if(rows.length<5) return null;
-    const side=n=>Number(n)>=5?"BIG":"SMALL";
-    const pattern=`${rows[0].number}|${rows[1].number}|${rows[2].number}|${side(rows[3].number)}|${side(rows[4].number)}`;
-    let big=0,small=0;
-    for(let i=1;i<=rows.length-5;i++){
-        const candidate=`${rows[i].number}|${rows[i+1].number}|${rows[i+2].number}|${side(rows[i+3].number)}|${side(rows[i+4].number)}`;
-        if(candidate!==pattern) continue;
-        side(rows[i-1].number)==="BIG"?big++:small++;
-    }
-    const total=big+small,bigPct=total?big/total*100:0,smallPct=total?small/total*100:0,confidence=Math.max(bigPct,smallPct);
-    if(!total||confidence<60||bigPct===smallPct) return null;
-    return {type:"SIZE",val:bigPct>smallPct?"BIG":"SMALL",mode:"HTML_PATTERN",pattern,matches:total,bigPct,smallPct,confidence:Math.round(confidence*10)/10};
-}
-
 //  PREDICT LOOP
 // ============================================================
 function parseItem(item) {
@@ -1006,22 +980,13 @@ async function runPredict(userId, chatId) {
     if(sentPeriods[userId].has(next)) return setTimeout(()=>runPredict(userId,chatId), 2000);
     sentPeriods[userId].add(next);
 
-    // Both the bot engine and the local HTML logic must agree before betting.
-    const botSignal = formulaMLPredict(list);
-    const htmlSignal = htmlPatternPredict(list);
-    if (!botSignal || !htmlSignal) {
-        await send(chatId, "⏭️ SKIP — Bot or HTML prediction unavailable. Level unchanged.");
-        return setTimeout(() => runPredict(userId, chatId), 5000);
-    }
-    if (botSignal.val !== htmlSignal.val) {
-        await send(chatId, "⏭️ SKIP — Prediction mismatch (Bot: " + botSignal.val + " | HTML: " + htmlSignal.val + "). Level unchanged.");
-        return setTimeout(() => runPredict(userId, chatId), 5000);
-    }
-    const signal = botSignal;
-    signal.htmlPrediction = htmlSignal.val;
-    signal.htmlConfidence = htmlSignal.confidence;
-    signal.predictionDetails = { liveDecision: "bot-and-local-html-agreement", htmlPattern: htmlSignal.pattern };
-    console.log(`[AGREEMENT] Bot=${botSignal.val} HTML=${htmlSignal.val} matches=${htmlSignal.matches} confidence=${htmlSignal.confidence}%`);
+    // Live decision uses only the supplied formula calibrated against old Luciferapi results.
+    const signal = formulaMLPredict(list);
+    if (!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
+    signal.calculationMode = signal.mode;
+    signal.calculationConfidence = signal.confidence;
+    signal.predictionDetails = { liveDecision: "formula-only-historical-calibration", calculation: signal.calculation };
+    console.log(`[FORMULA ML LIVE] ${signal.val} mode=${signal.mode} accuracy=${(signal.accuracy * 100).toFixed(1)}% digit=${signal.lastDigit} samples=${signal.total}`);
     state.currentMode = null;
     state.lastPrediction = signal.val;
     // Snapshot the level used for this prediction before any result update.
@@ -1321,25 +1286,11 @@ function startBot(){
 
 }
 
-const chatMessageQueues = new Map();
-function enqueueChatMessage(chatId, task) {
-    const key = String(chatId);
-    const previous = chatMessageQueues.get(key) || Promise.resolve();
-    const current = previous.catch(() => {}).then(task);
-    chatMessageQueues.set(key, current);
-    return current.finally(() => {
-        if (chatMessageQueues.get(key) === current) chatMessageQueues.delete(key);
-    });
-}
 async function send(chatId,text,opts={}){
-    return enqueueChatMessage(chatId, async () => {
-        try{return await bot.sendMessage(chatId,text,opts);}
-        catch(e){if(e.message&&e.message.includes("parse entities")){try{const o={...opts};delete o.parse_mode;return await bot.sendMessage(chatId,text,o);}catch(e2){}}console.error("send:",e.message?.substr(0,60));}
-    });
+    try{return await bot.sendMessage(chatId,text,opts);}
+    catch(e){if(e.message&&e.message.includes("parse entities")){try{const o={...opts};delete o.parse_mode;return await bot.sendMessage(chatId,text,o);}catch(e2){}}console.error("send:",e.message?.substr(0,60));}
 }
-async function sendSticker(chatId,sid){
-    return enqueueChatMessage(chatId, async () => {try{return await bot.sendSticker(chatId,sid);}catch(e){}});
-}
+async function sendSticker(chatId,sid){try{await bot.sendSticker(chatId,sid);}catch(e){}}
 
 // ============================================================
 //  AUTO LOGIN TASK
