@@ -19,7 +19,6 @@ const BET_URL     = "https://api.ar-lottery01.com/api/Lottery/WinGoBet";
 const LOGIN_URL   = "https://13llottery.com/api/Home/Login";
 const CAPTCHA_URL = "https://13llottery.com/api/Home/Captcha";
 const DRAW_URL    = "https://luciferapi.com/";
-const NETLIFY_PREDICTION_URL = "https://strong-rabanadas-5d96c3.netlify.app/";
 
 // Martingale multipliers — user can customize base bet
 const MULT = [1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683]; // Standard 3x Martingale multipliers
@@ -63,9 +62,6 @@ let profitTrack    = {};
 let GLOBAL_TOKEN   = "";
 let userTokens = {}; 
 let userStates = {};
-let predictionBrowser = null;
-let predictionPage = null;
-let predictionPagePromise = null;
 
 
 // ============================================================
@@ -936,46 +932,30 @@ function formulaMLPredict(list) {
     };
 }
 
-async function readLiveNetlifyPrediction() {
-    if (!predictionPagePromise) {
-        predictionPagePromise = (async () => {
-            predictionBrowser = await puppeteer.launch({
-                headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
-            });
-            predictionPage = await predictionBrowser.newPage();
-            await predictionPage.setRequestInterception(true);
-            predictionPage.on('request', request => {
-                const type = request.resourceType();
-                if (type === 'image' || type === 'font' || type === 'media') request.abort().catch(() => {});
-                else request.continue().catch(() => {});
-            });
-            await predictionPage.goto(NETLIFY_PREDICTION_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            return predictionPage;
-        })().catch(error => {
-            predictionPagePromise = null;
-            throw error;
-        });
+// Local copy of the Netlify HTML page's 5-result prediction logic.
+function htmlPatternPredict(list) {
+    if (!Array.isArray(list)) return null;
+    const rows=list.slice().sort((a,b)=>{
+        const ai=String(a?.issueNumber??a?.issue??a?.period??""), bi=String(b?.issueNumber??b?.issue??b?.period??"");
+        if (/^\d+$/.test(ai)&&/^\d+$/.test(bi)) return ai.length!==bi.length ? bi.length-ai.length : bi.localeCompare(ai);
+        return 0;
+    }).map((item,index)=>{
+        const raw=item?.number??item?.result??item?.resultNumber??item?.num??item?.value??item?.winNumber;
+        const number=Number.parseInt(String(raw??"").replace(/\D/g,"").slice(-1),10);
+        return {number,issue:String(item?.issueNumber??item?.issue??item?.period??item?.periodNumber??item?.id??index)};
+    }).filter(row=>Number.isInteger(row.number)&&row.number>=0&&row.number<=9);
+    if(rows.length<5) return null;
+    const side=n=>Number(n)>=5?"BIG":"SMALL";
+    const pattern=`${rows[0].number}|${rows[1].number}|${rows[2].number}|${side(rows[3].number)}|${side(rows[4].number)}`;
+    let big=0,small=0;
+    for(let i=1;i<=rows.length-5;i++){
+        const candidate=`${rows[i].number}|${rows[i+1].number}|${rows[i+2].number}|${side(rows[i+3].number)}|${side(rows[i+4].number)}`;
+        if(candidate!==pattern) continue;
+        side(rows[i-1].number)==="BIG"?big++:small++;
     }
-    const page = await predictionPagePromise;
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    const live = await page.evaluate(() => ({
-        prediction: document.querySelector('#prediction')?.textContent?.trim() || 'SKIP',
-        info: document.querySelector('#predictionInfo')?.textContent?.trim() || ''
-    }));
-    if (live.prediction !== 'BIG' && live.prediction !== 'SMALL') return null;
-    return { type: 'SIZE', val: live.prediction, mode: 'LIVE_NETLIFY', calculation: live.info };
-}
-
-async function closeLiveNetlifyReader() {
-    const page = predictionPage;
-    const browser = predictionBrowser;
-    predictionPage = null;
-    predictionBrowser = null;
-    predictionPagePromise = null;
-    try { if (page && !page.isClosed()) await page.close(); } catch {}
-    try { if (browser) await browser.close(); } catch {}
+    const total=big+small,bigPct=total?big/total*100:0,smallPct=total?small/total*100:0,confidence=Math.max(bigPct,smallPct);
+    if(!total||confidence<60||bigPct===smallPct) return null;
+    return {type:"SIZE",val:bigPct>smallPct?"BIG":"SMALL",mode:"HTML_PATTERN",pattern,matches:total,bigPct,smallPct,confidence:Math.round(confidence*10)/10};
 }
 
 //  PREDICT LOOP
@@ -1026,31 +1006,22 @@ async function runPredict(userId, chatId) {
     if(sentPeriods[userId].has(next)) return setTimeout(()=>runPredict(userId,chatId), 2000);
     sentPeriods[userId].add(next);
 
-    // Bet only when the bot prediction and the live Netlify page agree.
+    // Both the bot engine and the local HTML logic must agree before betting.
     const botSignal = formulaMLPredict(list);
-    let netlifySignal;
-    try {
-        netlifySignal = await readLiveNetlifyPrediction();
-    } catch (error) {
-        console.error("[NETLIFY READ ERROR]", error?.message || error);
-        await closeLiveNetlifyReader();
+    const htmlSignal = htmlPatternPredict(list);
+    if (!botSignal || !htmlSignal) {
+        await send(chatId, "⏭️ SKIP — Bot or HTML prediction unavailable. Level unchanged.");
         return setTimeout(() => runPredict(userId, chatId), 5000);
     }
-    if (!botSignal || !netlifySignal) {
-        await send(chatId, "⏭️ SKIP — Bot or live Netlify prediction unavailable.");
-        return setTimeout(() => runPredict(userId, chatId), 5000);
-    }
-    if (botSignal.val !== netlifySignal.val) {
-        await send(chatId, "⏭️ SKIP — Prediction mismatch (Bot: " + botSignal.val + " | HTML: " + netlifySignal.val + "). Level unchanged.");
+    if (botSignal.val !== htmlSignal.val) {
+        await send(chatId, "⏭️ SKIP — Prediction mismatch (Bot: " + botSignal.val + " | HTML: " + htmlSignal.val + "). Level unchanged.");
         return setTimeout(() => runPredict(userId, chatId), 5000);
     }
     const signal = botSignal;
-    signal.netlifyPrediction = netlifySignal.val;
-    signal.netlifyInfo = netlifySignal.calculation;
-    signal.calculationMode = signal.mode;
-    signal.calculationConfidence = signal.confidence;
-    signal.predictionDetails = { liveDecision: "formula-only-historical-calibration", calculation: signal.calculation };
-    console.log(`[FORMULA ML LIVE] ${signal.val} mode=${signal.mode} accuracy=${(signal.accuracy * 100).toFixed(1)}% digit=${signal.lastDigit} samples=${signal.total}`);
+    signal.htmlPrediction = htmlSignal.val;
+    signal.htmlConfidence = htmlSignal.confidence;
+    signal.predictionDetails = { liveDecision: "bot-and-local-html-agreement", htmlPattern: htmlSignal.pattern };
+    console.log(`[AGREEMENT] Bot=${botSignal.val} HTML=${htmlSignal.val} matches=${htmlSignal.matches} confidence=${htmlSignal.confidence}%`);
     state.currentMode = null;
     state.lastPrediction = signal.val;
     // Snapshot the level used for this prediction before any result update.
@@ -1350,11 +1321,25 @@ function startBot(){
 
 }
 
-async function send(chatId,text,opts={}){
-    try{return await bot.sendMessage(chatId,text,opts);}
-    catch(e){if(e.message&&e.message.includes("parse entities")){try{const o={...opts};delete o.parse_mode;return await bot.sendMessage(chatId,text,o);}catch(e2){}}console.error("send:",e.message?.substr(0,60));}
+const chatMessageQueues = new Map();
+function enqueueChatMessage(chatId, task) {
+    const key = String(chatId);
+    const previous = chatMessageQueues.get(key) || Promise.resolve();
+    const current = previous.catch(() => {}).then(task);
+    chatMessageQueues.set(key, current);
+    return current.finally(() => {
+        if (chatMessageQueues.get(key) === current) chatMessageQueues.delete(key);
+    });
 }
-async function sendSticker(chatId,sid){try{await bot.sendSticker(chatId,sid);}catch(e){}}
+async function send(chatId,text,opts={}){
+    return enqueueChatMessage(chatId, async () => {
+        try{return await bot.sendMessage(chatId,text,opts);}
+        catch(e){if(e.message&&e.message.includes("parse entities")){try{const o={...opts};delete o.parse_mode;return await bot.sendMessage(chatId,text,o);}catch(e2){}}console.error("send:",e.message?.substr(0,60));}
+    });
+}
+async function sendSticker(chatId,sid){
+    return enqueueChatMessage(chatId, async () => {try{return await bot.sendSticker(chatId,sid);}catch(e){}});
+}
 
 // ============================================================
 //  AUTO LOGIN TASK
@@ -1650,7 +1635,7 @@ if(text==="🔢 Set Watch Losses"){
             );
             runPredict(id,msg.chat.id);
         }
-        if(text==="🛑 Stop")   {running[id]=false;await closeLiveNetlifyReader();send(msg.chat.id,"🛑 Stopped.");}
+        if(text==="🛑 Stop")   {running[id]=false;send(msg.chat.id,"🛑 Stopped.");}
         if(text==="📊 Stats")  showStats(msg.chat.id,id);
         if(text==="💰 Profit") profitReport(msg.chat.id,id);
         if(text==="📩 Contact") send(msg.chat.id,"📩 "+ADMIN_HANDLE+"\nID: "+id);
