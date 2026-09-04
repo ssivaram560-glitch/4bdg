@@ -734,6 +734,9 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
     state.resultHistory.push(bs);
     if (state.resultHistory.length > 50) state.resultHistory.shift();
 
+    // Every resolved prediction updates the formula engine's W/L mode history.
+    updatePredictionModeAfterResult(userId, wasWin);
+
     // Watch/failed-bet results must not alter martingale state.
     if (!betPlaced) return;
 
@@ -821,75 +824,78 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
 //  The Luciferapi HTML 5-result pattern analysis below is the sole decision source.
 //  Faithful backend port of preview.html → analyze() for 100% parity.
 // ============================================================
-function htmlPatternPredictSide(n) { return Number(n) >= 5 ? "BIG" : "SMALL"; }
+function initPredictionState(userId) {
+    initState(userId);
+    const state = userStates[userId];
+    if (!Array.isArray(state.history)) state.history = [];
+    if (state.mode !== "NORMAL" && state.mode !== "RECOVERY") state.mode = "NORMAL";
+    return state;
+}
 
-function htmlPatternPredict(list) {
-    if (!Array.isArray(list) || list.length < 5) return null;
+// New prediction engine: next period + latest result mathematical formula.
+function decidePrediction(list, currentLevel, userId) {
+    if (!Array.isArray(list) || list.length < 2) return null;
 
-    const results = luciferSortNewest(
-        list.map((x, i) => {
-            if (typeof x === "string" || typeof x === "number") {
-                const numStr = String(x).replace(/\D/g, "").slice(-1);
-                return { number: /^[0-9]$/.test(numStr) ? numStr : null, issue: String(i) };
-            }
-            const rawN = x.number ?? x.result ?? x.resultNumber ?? x.num ?? x.value ?? x.openNumber ?? x.winNumber;
-            const rawI = x.issue ?? x.issueNumber ?? x.period ?? x.periodNumber ?? x.id ?? i;
-            const numStr = String(rawN ?? "").replace(/\D/g, "").slice(-1);
-            return {
-                number: /^[0-9]$/.test(numStr) ? numStr : null,
-                issue: String(rawI)
-            };
-        }).filter(x => x.number !== null && /^[0-9]$/.test(x.number))
-    );
-
-    if (results.length < 5) return null;
-
-    const r1 = results[0].number;
-    const r2 = results[1].number;
-    const r3 = results[2].number;
-    const r4 = results[3].number;
-    const r5 = results[4].number;
-    const sides = [htmlPatternPredictSide(r4), htmlPatternPredictSide(r5)];
-    const pattern = `${r1}|${r2}|${r3}|${sides[0]}|${sides[1]}`;
-
-    let big = 0, small = 0;
-    const matches = [];
-    for (let i = 1; i <= results.length - 5; i++) {
-        const a = results[i], b = results[i + 1], c = results[i + 2], d = results[i + 3], e = results[i + 4];
-        const p = `${a.number}|${b.number}|${c.number}|${htmlPatternPredictSide(d.number)}|${htmlPatternPredictSide(e.number)}`;
-        if (p === pattern) {
-            const next = results[i - 1];
-            if (!next) continue;
-            const side = htmlPatternPredictSide(next.number);
-            if (side === "BIG") big++; else small++;
-            matches.push({ r1: a.number, r2: b.number, r3: c.number, r4: d.number, r5: e.number, next: next.number, side });
-        }
+    const state = initPredictionState(userId);
+    const currentPeriod = String(list[0].issueNumber ?? "");
+    const currentResult = parseInt(list[0].number ?? list[0].winNumber ?? 0, 10);
+    if (!/^\d+$/.test(currentPeriod) || !Number.isInteger(currentResult) || currentResult === 0) {
+        return null;
     }
 
-    const total = big + small;
-    const bp = total ? big / total * 100 : 0;
-    const sp = total ? small / total * 100 : 0;
-
-    let pred = null;
-    const conf = Math.max(bp, sp);
-    if (total && conf >= 60 && bp !== sp) {
-        pred = bp > sp ? "BIG" : "SMALL";
+    let nextPeriod;
+    try {
+        nextPeriod = (BigInt(currentPeriod) + 1n).toString();
+    } catch {
+        return null;
     }
 
-    if (!pred) return null;
+    const nextLast3Num = parseInt(nextPeriod.slice(-3), 10);
+    const answer = nextLast3Num * Math.exp(currentResult);
+    const noDecimal = answer.toString().replace('.', '');
+    const first14 = noDecimal.substring(0, 14);
+    const lastDigit = parseInt(first14.charAt(first14.length - 1), 10);
+    if (!Number.isInteger(lastDigit)) return null;
+
+    let prediction = lastDigit <= 4 ? 'SMALL' : 'BIG';
+    if (state.mode === 'RECOVERY') {
+        prediction = prediction === 'SMALL' ? 'BIG' : 'SMALL';
+    }
 
     return {
-        type: "SIZE",
-        val: pred,
-        mode: "HTML_PATTERN",
-        calculation: "R1|R2|R3 exact nums · R4|R5 BIG/SMALL · historical pattern match (preview.html analyze())",
-        pattern,
-        matches: total,
-        bigPct: bp,
-        smallPct: sp,
-        confidence: Math.round(conf * 10) / 10,
-        historicalMatches: matches
+        type: 'SIZE',
+        val: prediction,
+        conf: 90,
+        pat: state.mode,
+        mode: state.mode,
+        calculation: 'next period last 3 digits × Math.exp(latest result) → last digit → BIG/SMALL',
+        sourceLastDigit: lastDigit
     };
+}
+
+function updatePredictionModeAfterResult(userId, wasWin) {
+    const state = initPredictionState(userId);
+    state.history.push(wasWin ? 'W' : 'L');
+    const histStr = state.history.join(',');
+
+    const isRecoveryPattern = histStr.endsWith('W,W,L') ||
+                              histStr.endsWith('W,W,W,L') ||
+                              /(L,L,L,L+)/.test(histStr);
+    const isNormalPattern = histStr.endsWith('W,L') ||
+                            /(W,W,W,W+),L$/.test(histStr);
+
+    if (isRecoveryPattern || isNormalPattern) {
+        if (state.mode === 'RECOVERY' && wasWin) {
+            state.mode = 'NORMAL';
+        } else if (isRecoveryPattern) {
+            state.mode = 'RECOVERY';
+        } else {
+            state.mode = 'NORMAL';
+        }
+        state.history = [];
+    }
+    if (state.history.length > 10) state.history.shift();
+    state.currentMode = state.mode;
 }
 
 //  PREDICT LOOP
@@ -941,15 +947,15 @@ async function runPredict(userId, chatId) {
     sentPeriods[userId].add(next);
 
     // Live decision uses only the HTML 5-result BIG/SMALL pattern logic.
-    const signal = htmlPatternPredict(list);
+    const signal = decidePrediction(list, st.level, userId);
     if (!signal) {
         await send(chatId, "⏭️ SKIP — No matching BIG/SMALL pattern with 60% confidence.");
         return schedulePrediction(userId, chatId, 5000);
     }
     signal.calculationMode = signal.mode;
     signal.calculationConfidence = signal.confidence;
-    signal.predictionDetails = { liveDecision: "html-5-result-pattern", calculation: signal.calculation };
-    console.log(`[HTML PATTERN LIVE] ${signal.val} matches=${signal.matches} BIG=${signal.bigPct.toFixed(1)}% SMALL=${signal.smallPct.toFixed(1)}% confidence=${signal.confidence}%`);
+    signal.predictionDetails = { liveDecision: "formula-prediction", calculation: signal.calculation };
+    console.log(`[FORMULA LIVE] ${signal.val} mode=${signal.mode} lastDigit=${signal.sourceLastDigit} confidence=${signal.conf}%`);
     state.currentMode = null;
     state.lastPrediction = signal.val;
     // Snapshot the level used for this prediction before any result update.
