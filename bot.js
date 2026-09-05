@@ -1548,9 +1548,10 @@ function numberPrediction(lastResult) {
         5: ['BIG', 3],
         4: ['SMALL', 6],
         3: ['SMALL', 9],
-        2: ['SMALL', 5],
-        1: ['BIG', 0],
-        0: ['BIG', 1]
+        2: ['BIG', 0],
+        1: ['SMALL', 5],
+        0: ['BIG', 2]
+   
     };
     const [size, number] = mapping[n];
     return { size, number };
