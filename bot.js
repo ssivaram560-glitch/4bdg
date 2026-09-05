@@ -838,7 +838,7 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
 // ============================================================
 // EXACT FORMULA PREDICTION LOGIC
 // next period last 3 digits × exp(current result)
-// 0-4 = SMALL, 5-9 = BIG; OPPOSITE mode reverses the signal.
+// 0-4 = SMALL, 5-9 = BIG; prediction is always opposite to the analysis.
 // ============================================================
 function formulaPredict(list, userId) {
     if (!list || list.length < 2) {
@@ -884,13 +884,13 @@ if (currentResult === 0) {
     // STEP 4: Get last digit
     const lastDigit = parseInt(first14.charAt(first14.length - 1));
 
-    // STEP 5: Apply logic based on MODE
-    let prediction = lastDigit <= 4 ? 'SMALL' : 'BIG';
+    // STEP 5: Analysis result from the calculated digit
+    const analysis = lastDigit <= 4 ? 'SMALL' : 'BIG';
 
-    // RECOVERY மோட்ல மட்டும் ஆப்போசிட் பண்ணுவோம்
-    if (sourceMode === 'RECOVERY') {
-        prediction = (prediction === 'SMALL') ? 'BIG' : 'SMALL';
-    }
+    // STEP 6: Always predict the opposite of the analysis:
+    // analysis BIG   -> prediction SMALL
+    // analysis SMALL -> prediction BIG
+    const prediction = analysis === 'BIG' ? 'SMALL' : 'BIG';
 
     return { 
         type: 'SIZE', 
@@ -898,7 +898,8 @@ if (currentResult === 0) {
         conf: 90, 
         pat: sourceMode,
         mode: sourceMode === "RECOVERY" ? "OPPOSITE" : "SAME",
-        calculation: `(${nextLast3Num} × exp(${currentResult})) → ${lastDigit} → ${prediction}` 
+        analysis,
+        calculation: `(${nextLast3Num} × exp(${currentResult})) → ${lastDigit} → analysis:${analysis} → prediction:${prediction}` 
     };
 }
 
