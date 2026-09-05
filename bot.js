@@ -982,7 +982,8 @@ async function runPredict(userId, chatId) {
 
     // Only the explicit AutoBet toggle controls whether a bet is sent.
     // `running[userId]` remains the master emergency stop.
-    const canBet = cfg.enabled === true && sourceShouldBet(userId);
+    // Always attempt a bet whenever AutoBet is enabled.
+    const canBet = cfg.enabled === true;
     const effectiveLevel = predictionLevel;
     const curBet = Number(cfg.customBets[effectiveLevel - 1] || (cfg.baseBet * MULT[effectiveLevel - 1]) || 0);
     const abLine = (canBet ? "💰 BET " : "👀 WATCH ") + "L" + effectiveLevel + ": ₹" + curBet;
