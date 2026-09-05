@@ -585,7 +585,7 @@ const BET_URL     = "https://api.ar-lottery01.com/api/Lottery/WinGoBet";
 const LOGIN_URL   = "https://13llottery.com/api/Home/Login";
 const CAPTCHA_URL = "https://13llottery.com/api/Home/Captcha";
 const DRAW_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json";
-const SITE_URL    = "https://www.ts777.co/#/";
+const SITE_URL    = "https://13lwin19.com";
 const CHROME_ARGS = [
     '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu',
     '--disable-dev-shm-usage', '--disable-extensions', '--disable-background-networking',
@@ -822,72 +822,100 @@ function sleep(ms) {
 
 async function fetchList() {
     try {
-        const response = await axios.get(DRAW_URL + "?_=" + Date.now(), {
-            headers: {
-                "Accept": "application/json",
-                "Origin": SITE_URL,
-                "Referer": SITE_URL,
-                "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/139.0.0.0 Safari/537.36"
-            },
-            timeout: 10000,
-            validateStatus: status => status >= 200 && status < 300
+        const response = await axios.get(DRAW_URL, {
+            headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0" },
+            timeout: 10000
         });
-        if (!(response.data && response.data.data && Array.isArray(response.data.data.list))) {
-            console.error("[FETCH LIST ERROR] WinGo response was not a list");
+        const payload = response.data || {};
+        const arr = luciferExtractData(payload);
+        if (!Array.isArray(arr) || arr.length === 0) {
+            console.error("[LUCIFER API] Invalid 1-minute history response");
             return null;
         }
-        return response.data.data.list;
+
+        const normalized = arr.map((x, i) => {
+            if (typeof x === "string" || typeof x === "number") {
+                return {
+                    issueNumber: String(i),
+                    number: Number(String(x).replace(/\D/g, "").slice(-1))
+                };
+            }
+            const rawN = x.number ?? x.result ?? x.resultNumber ?? x.num ?? x.value ?? x.openNumber ?? x.winNumber;
+            const rawI = x.issue ?? x.issueNumber ?? x.period ?? x.periodNumber ?? x.id ?? i;
+            const numStr = String(rawN ?? "").replace(/\D/g, "").slice(-1);
+            return {
+                issueNumber: String(rawI),
+                number: /^[0-9]$/.test(numStr) ? Number(numStr) : NaN,
+                size: String(x.size || ((/^[0-9]$/.test(numStr) && Number(numStr) >= 5) ? "BIG" : "SMALL")).toUpperCase(),
+                color: String(x.color || "").toUpperCase(),
+                openTime: x.openTime,
+                timestamp: x.timestamp
+            };
+        }).filter(row =>
+            /^\d+$/.test(row.issueNumber) &&
+            Number.isInteger(row.number) && row.number >= 0 && row.number <= 9
+        );
+
+        return luciferSortNewest(normalized).map(row => ({
+            ...row,
+            size: row.size && row.size !== "UNDEFINED" ? row.size : (row.number >= 5 ? "BIG" : "SMALL")
+        }));
     } catch (error) {
-        console.error("[FETCH LIST ERROR]", error.message);
+        console.error("[LUCIFER API ERROR]", error.message);
         return null;
     }
 }
 // Helper parser function
-async function parseBalanceResponse(r) {
-    if (r.data && r.data.code === 0 && r.data.data && typeof r.data.data.balance !== 'undefined') {
-        return { success: true, balance: r.data.data.balance };
-    }
-    return {
-        success: false,
-        message: r.data && r.data.msg ? r.data.msg : "Token expired or invalid"
-    };
-}
-
 async function getLiveBalance(userId, chatId = null) {
     let token = getToken(userId);
     
-    // Do not auto-login just because the token is missing.
-    // Login must be started explicitly from the Login button/command.
-    if (!token) return { success: false, message: "No token - press Login first" };
+    // Optional: Auto login if token is missing
+    if (!token && chatId) {
+        const ok = await autoLogin(userId, chatId, true);
+        if (ok) token = getToken(userId);
+    }
 
-    const baseParams = {
-        language: "en",
-        random: Math.floor(Math.random() * 1e12)
-    };
-    const signature = makeBetSign(baseParams);
-    const timestamp = Math.floor(Date.now() / 1000);
-    const qs = new URLSearchParams({
-        ...baseParams,
-        signature,
-        timestamp
-    }).toString();
-    const url = "https://api.ar-lottery01.com/api/Lottery/GetBalance?" + qs;
+    if (!token) return { success: false, message: "No token" };
+
+    const baseUrl = "https://api.ar-lottery01.com/api/Lottery/GetBalance";
+    const signedParams = buildBalanceSignedParams();
+    const queryString = new URLSearchParams(signedParams).toString();
+    const url = baseUrl + "?" + queryString;
+
     const headers = {
         "Authorization": "Bearer " + token,
+        "Ar-Origin": "https://13lwin19.com",
+        "Origin": "https://13lwin19.com",
+        "Referer": "https://13lwin19.com/",
         "Accept": "application/json, text/plain, */*",
-        "Origin": "https://www.ts777.co",
-        "User-Agent": "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Mobile Safari/537.36"
+        "Sec-Ch-Ua": '"Chromium";v="139"',
+        "Sec-Ch-Ua-Mobile": "?1",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "cross-site",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36"
     };
 
     try {
-        const r = await axios.get(url, { headers, timeout: 10000 });
+        const r = await axios.get(url, { headers, timeout: 5000 });
         return await parseBalanceResponse(r);
     } catch (e) {
+        if (e.response && e.response.status === 405) {
+            try {
+                const signedParams2 = buildBalanceSignedParams();
+                const queryString2 = new URLSearchParams(signedParams2).toString();
+                const url2 = baseUrl + "?" + queryString2;
+                const r2 = await axios.post(url2, signedParams2, { headers, timeout: 5000 });
+                return await parseBalanceResponse(r2);
+            } catch (e2) {
+                const errMsg = e2.response?.data?.msg || e2.message || "API Error";
+                return { success: false, message: errMsg };
+            }
+        }
         const errMsg = e.response?.data?.msg || e.message || "API Error";
         return { success: false, message: errMsg };
     }
 }
-
 function initUser(id) {
     userLastSeen[id] = Date.now();
     if (!stats[id])        stats[id]        = { total:0,win:0,loss:0,lossStreak:0,winStreak:0,maxWinStreak:0,maxLossStreak:0,levelWins:{},sizeLevelWins:{},numberLevelWins:{} };
@@ -1241,32 +1269,27 @@ async function startLoginWithRetry(userId, chatId) {
 //  IMPROVED PLACE BET FUNCTION (Silent Retries & Multi-Request Fix)
 // ============================================================
 // ============================================================
-async function placeBet(userId, chatId, period, prediction, predType, level, amountOverride) {
-    // Missing token is not a relogin trigger. The user must press Login first.
-    let token = normalizeToken(getToken(userId));
+            async function placeBet(userId, chatId, period, prediction, predType, level) {
+    let token = getToken(userId);
     if (!token || token.length < 20) {
-        await send(chatId, "❌ Token இல்லை. முதலில் 🔐 Login press பண்ணு.");
-        return false;
+        console.log("[PLACE BET] Token missing or invalid, attempting autoLogin...");
+        const ok = await autoLogin(userId, chatId, true);
+        if (!ok) { 
+            await send(chatId, "❌ Token இல்லை! Auto-login தோல்வியடைந்தது."); 
+            return false; 
+        }
+        token = getToken(userId);
     }
 
-    // Always re-read the repaired canonical token immediately before the request.
-    token = getToken(String(userId));
-    if (!token || token.length < 20) {
-        await send(chatId, '❌ Token missing before bet request.');
-        return false;
-    }
-
-    const cfg        = autobetCfg[userId];
-    const fallbackAmount = cfg.customBets[level-1] || (cfg.baseBet * MULT[level-1]);
-    const betMult   = Number.isFinite(Number(amountOverride)) ? Number(amountOverride) : fallbackAmount;
+    const cfg       = autobetCfg[userId];
+    const betMult   = cfg.customBets[level-1] || (cfg.baseBet * MULT[level-1]);
     let bc = "";
 
-    const maxRetries = 5; 
+    const maxRetries = 3; 
     const retryDelayMs = 2000; 
 
-    if (predType === "SIZE") bc = prediction === "BIG" ? "BigSmall_Big" : "BigSmall_Small";
-    if (predType === "NUMBER") bc = "Num_" + String(prediction);
-    if (predType === "COLOR") bc = prediction === "RED" ? "Color_Red" : "Color_Green";
+    if (predType === "SIZE")  bc = prediction === "BIG" ? "BigSmall_Big" : "BigSmall_Small";
+    if (predType === "COLOR") bc = prediction === "RED" ? "Color_Red"    : "Color_Green";
 
     console.log(`[BET] ${bc} ₹${betMult} L${level} for Period: ${period}`);
 
@@ -1277,7 +1300,7 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
                 amount:      1,
                 betContent:  bc,
                 betMultiple: betMult,
-                gameCode:    "WinGo_30S", 
+                gameCode:    "WinGo_1M", 
                 issueNumber: String(period),
                 language:    "en",
                 random:      Math.floor(Math.random() * 1e12)
@@ -1286,17 +1309,15 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
             const timestamp = Math.floor(Date.now() / 1000);
             const payload   = {...params, signature, timestamp};
 
-            const session = userSessions[String(userId)] || {};
             const r = await axios.post(BET_URL, payload, {
                 headers: {
-                    "Authorization":    "Bearer " + normalizeToken(token),
-                    "authorization":    "Bearer " + normalizeToken(token),
+                    "Authorization":    "Bearer " + token,
+                    "authorization":    "Bearer " + token,
                     "content-type":     "application/json",
                     "Accept":           "application/json, text/plain, */*",
-                    "Origin":           SITE_URL,
-                    "Referer":          SITE_URL,
-                    "Ar-Origin":        SITE_URL,
-                    ...(session.cookieHeader ? { "Cookie": session.cookieHeader } : {}),
+                    "Origin":           "https://13lwin19.com",
+                    "Referer":          "https://13lwin19.com/",
+                    "Ar-Origin":        "https://13lwin19.com",
                     "Sec-Ch-Ua":        '"Chromium";v="139"',
                     "Sec-Ch-Ua-Mobile": "?1",
                     "Sec-Fetch-Dest":   "empty",
@@ -1304,63 +1325,52 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
                     "Sec-Fetch-Site":   "cross-site",
                     "User-Agent":       "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36"
                 },
-                timeout: 10000
+                timeout: 15000,
+                validateStatus: () => true
             });
-            const d = r.data || {};
-            const apiMessage = String(d.msg ?? d.message ?? d.msgCode ?? "");
-            console.log(`[BET RESP] code:${d.code} msg:${apiMessage}`);
 
-            // A bet response may rotate the token. Accept it only after bet success.
-            // If no valid token is returned, keep the current token unchanged.
-            const responseToken = normalizeToken(
-                r.headers['authorization'] ||
-                r.headers['x-auth-token'] ||
-                d.data?.token ||
-                d.token
-            );
+            const d = r.data || {};
+            console.log(`[BET RESP] http:${r.status} code:${d.code} msg:${d.msg || d.message || ""}`);
+
+            // Token check from response headers/body
+            const newTokenFromResponseHeader = r.headers['authorization'] || r.headers['x-auth-token'];
+            if (newTokenFromResponseHeader) {
+                const cleanNewToken = newTokenFromResponseHeader.replace(/^Bearer\s+/i, "");
+                if (cleanNewToken !== token) {
+                    userTokens[userId] = cleanNewToken;
+                    token = cleanNewToken; // update local variable too
+                    console.log("[TOKEN UPDATE] New token captured from bet response headers!");
+                }
+            }
+
+            if (d.data && d.data.token && d.data.token !== token) {
+                 userTokens[userId] = d.data.token;
+                 token = d.data.token;
+                 console.log("[TOKEN UPDATE] New token captured from bet response body!");
+            }
 
             // Success case
             if (d.code === 0 || d.msg === "Succeed" || d.msgCode === 0) {
-                if (responseToken && responseToken.length >= 20) {
-                    const updated = saveUserToken(userId, responseToken);
-                    if (updated) {
-                        token = responseToken;
-                        console.log("[TOKEN UPDATE] Valid token saved after successful bet.");
-                    } else {
-                        console.warn("[TOKEN UPDATE] Token cache failed; existing token kept.");
-                    }
-                }
-                return { ok: true, amt: betMult, bc };
-            }
-            if (d.code === 0 || d.msg === "Succeed" || d.msgCode === 0) {
                 return { ok: true, amt: betMult, bc };
             }
 
-            // Token Expiry Handling -> AUTOMATIC RELOGIN
-            if (d.code === 401 || d.code === 40100 || d.status === 401 || isTokenExpiredMessage(apiMessage)) {
-                console.log("[AUTO RELOGIN] Token expired during bet. Keeping old token until relogin succeeds...");
-                const oldToken = getToken(userId);
-                const freshToken = await autoLogin(userId, chatId, true);
-                if (freshToken) {
-                    const verifiedFreshToken = getToken(userId);
-                    if (verifiedFreshToken) {
-                        token = verifiedFreshToken;
-                        console.log("[AUTO RELOGIN] Success! Verified new token; retrying the bet...");
-                        continue;
-                    }
-                    token = oldToken;
-                    await send(chatId, "❌ Relogin completed but no new verified token was received.");
-                    return false;
+            // Token Expiry Handling -> AUTOMATIC RELOGIN (User கேட்காத வண்ணம்)
+            if (d.code === 401 || d.code === 40100 || (d.msg && (d.msg.toLowerCase().includes("token") || d.msg.toLowerCase().includes("expired")))) {
+                console.log("[AUTO RELOGIN] Token expired during bet. Trying autoLogin...");
+                const loginSuccess = await autoLogin(userId, chatId, true);
+                if (loginSuccess) {
+                    token = getToken(userId); // Get fresh token
+                    console.log("[AUTO RELOGIN] Success! Retrying the bet with new token...");
+                    continue; // Retry the loop with new token
                 } else {
-                    token = oldToken;
-                    await send(chatId, "❌ Auto-login failed. Existing token was kept.");
+                    await send(chatId, "❌ Auto-login failed during token expiry.");
                     return false;
                 }
             }
 
             // Retryable errors like Param is Invalid, issue number, etc.
             const retryableErrors = ["param is invalid", "the issue number does not exist", "period current settled"];
-            const lowerMsg = String(apiMessage).toLowerCase();
+            const lowerMsg = (d.msg || "").toLowerCase();
             
             if (retryableErrors.some(errStr => lowerMsg.includes(errStr))) {
                 console.log(`[BET RETRY] Retryable error: ${d.msg}. Retrying in ${retryDelayMs / 1000}s... (Attempt ${i + 1}/${maxRetries})`);
@@ -1369,30 +1379,21 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
             }
 
             // Other unhandled API errors
-            await send(chatId, "❌ Bet fail: " + (apiMessage || JSON.stringify(d).substr(0, 120)));
+            await send(chatId, "❌ Bet fail: " + (d.msg || JSON.stringify(d).substr(0, 60)));
             return false;
 
         } catch (err) {
             console.error("[BET ERR]", err.message);
 
             // Handle Axios 401 / Token errors inside catch block
-            const responseMessage = err.response?.data?.msg || err.response?.data?.message || '';
-            if (err.response && (err.response.status === 401 || isTokenExpiredMessage(responseMessage))) {
-                console.log("[AUTO RELOGIN] Token error caught via exception. Keeping old token until relogin succeeds...");
-                const oldToken = token;
+            if (err.response && (err.response.status === 401 || (err.response.data && err.response.data.msg && (err.response.data.msg.toLowerCase().includes("token") || err.response.data.msg.toLowerCase().includes("expired"))))) {
+                console.log("[AUTO RELOGIN] Token error caught via exception. Trying autoLogin...");
                 const loginSuccess = await autoLogin(userId, chatId, true);
                 if (loginSuccess) {
-                    const verifiedFreshToken = getToken(userId);
-                    if (verifiedFreshToken) {
-                        token = verifiedFreshToken;
-                        continue; // Retry after verified relogin
-                    }
-                    token = oldToken;
-                    await send(chatId, "❌ Relogin completed but no new verified token was received.");
-                    return false;
+                    token = getToken(userId);
+                    continue; // Retry after relogin
                 } else {
-                    token = oldToken;
-                    await send(chatId, "❌ Auto-login failed. Existing token was kept.");
+                    await send(chatId, "❌ Auto-login failed during token error.");
                     return false;
                 }
             }
@@ -1411,7 +1412,9 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
 
     console.log("[BET FAIL] All retries exhausted.");
     return false;
-}
+            }
+
+
 // ============================================================
 // ============================================================
 // COMPLETE BOT LOGIC WITH 4-PREDICTION PATTERN MODE EXTENSION & FIXES
