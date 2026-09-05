@@ -1453,7 +1453,12 @@ function modeLabel(mode) {
 
 function getSequenceAmount(userId, level, kind = "default") {
     const cfg = autobetCfg[userId] || {};
-    const seq = cfg.mode === "COMBINED" ? (kind === "number" ? cfg.customNumberBets : cfg.customSizeBets) : cfg.customBets;
+    // NUMBER mode must use the number stake sequence, not the generic/size sequence.
+    const seq = kind === "number"
+        ? cfg.customNumberBets
+        : cfg.mode === "COMBINED"
+            ? cfg.customSizeBets
+            : cfg.customBets;
     return Number(seq?.[level - 1] ?? (cfg.baseBet * (MULT[level - 1] || 1)));
 }
 
@@ -1790,7 +1795,11 @@ async function runPredict(userId, chatId) {
         canBet = false;
     } else {
         canBet = true;
-        const curBet = cfg.customBets[st.level-1] || (cfg.baseBet*MULT[st.level-1]);
+        const curBet = cfg.mode === "NUMBER"
+            ? getSequenceAmount(userId, st.numberLevel, "number")
+            : cfg.mode === "COMBINED"
+                ? `S₹${getSequenceAmount(userId, st.sizeLevel, "size")} / N₹${getSequenceAmount(userId, st.numberLevel, "number")}`
+                : getSequenceAmount(userId, st.level);
         abLine = (st.level > 1 ? "📈 MART " : "💰 BET ") + "L" + st.level + ": ₹" + curBet;
     }
 
@@ -1816,17 +1825,24 @@ waitLine+"\n"+
     let placedBets = [];
     if (canBet) {
         const rawSpecs = signal.bets || [{ type: signal.type, val: signal.val, kind: signal.type === "NUMBER" ? "number" : "size" }];
-        // Enforce exactly one SIZE and one NUMBER for each period in COMBINED mode.
+        // Enforce the selected mode: NUMBER = exact predicted number only,
+        // SIZE = BIG/SMALL only, COMBINED = one of each.
         const sizeSpec = rawSpecs.find(spec => spec.type === "SIZE");
         const numberSpec = rawSpecs.find(spec => spec.type === "NUMBER");
-        const specs = cfg.mode === "COMBINED"
-            ? [sizeSpec, numberSpec].filter(Boolean)
-            : rawSpecs.filter(spec => spec.type === "SIZE" || spec.type === "NUMBER");
+        const specs = cfg.mode === "NUMBER"
+            ? [numberSpec].filter(Boolean)
+            : cfg.mode === "SIZE"
+                ? [sizeSpec].filter(Boolean)
+                : [sizeSpec, numberSpec].filter(Boolean);
         const combinedAmounts = getCombinedBetAmounts(userId, st.sizeLevel, st.numberLevel);
         for (const spec of specs) {
             const isNumber = spec.type === "NUMBER";
-            const amount = isNumber ? combinedAmounts.number : combinedAmounts.size;
-            const levelForBet = isNumber ? combinedAmounts.numberLevel : combinedAmounts.sizeLevel;
+            const levelForBet = isNumber ? st.numberLevel : st.sizeLevel;
+            const amount = cfg.mode === "NUMBER"
+                ? getSequenceAmount(userId, levelForBet, "number")
+                : cfg.mode === "SIZE"
+                    ? getSequenceAmount(userId, levelForBet)
+                    : (isNumber ? combinedAmounts.number : combinedAmounts.size);
             const result = await placeBet(userId, chatId, next, spec.val, spec.type, levelForBet, amount);
             if (result && result.ok) placedBets.push({ ...spec, amt: result.amt, level: levelForBet });
             else await send(chatId, "❌ Bet Failed (" + spec.type + "): " + (result?.msg || "Unknown error"));
@@ -1842,7 +1858,11 @@ waitLine+"\n"+
 
     // Pass the signal bets separately so WATCH mode can evaluate predictions even when AutoBet is OFF.
     const rawPredictedBets = signal.bets || [{ type: signal.type, val: signal.val, kind: signal.type === "NUMBER" ? "number" : "size" }];
-    const predictedBets = rawPredictedBets.filter(spec => spec.type === "SIZE" || spec.type === "NUMBER");
+    const predictedBets = rawPredictedBets.filter(spec =>
+        spec.type === "SIZE" && cfg.mode === "SIZE" ||
+        spec.type === "NUMBER" && cfg.mode === "NUMBER" ||
+        cfg.mode === "COMBINED" && (spec.type === "SIZE" || spec.type === "NUMBER")
+    );
     checkResult(userId, chatId, next, signal.val, signal.type, placedBets, predictedBets);
     runInFlight.delete(runKey);
 }
@@ -2534,7 +2554,7 @@ function addHandlers(){
         if(text==="🔢 Mode: Number"){
             delete userAction[id];
             autobetCfg[id].mode="NUMBER";
-            return send(id,"✅ Mode set: NUMBER\nExact Num_5 bet enabled.",{reply_markup:autobetMenu});
+            return send(id,"✅ Mode set: NUMBER\nBet will use the exact predicted Num_<number> only.",{reply_markup:autobetMenu});
         }
         if(text==="🔀 Mode: BigSmall+Number"){
             delete userAction[id];
