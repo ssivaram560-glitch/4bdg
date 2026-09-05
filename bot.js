@@ -1008,8 +1008,13 @@ async function runPredict(userId, chatId) {
         if (result && result.ok) {
             betPlaced = true;
             await send(chatId, "✅ Bet placed successfully | L" + effectiveLevel + "\n⏳ Checking result...");
-        } else if (result && !result.ok) {
-            await send(chatId, "❌ Bet Failed: " + (result.msg || "Unknown error"));
+        } else {
+            // Bet was not confirmed/placed: mark this period as WATCH, not BET.
+            const reason = result?.msg || "Bet could not be placed";
+            await send(chatId,
+                "👀 WATCH — Bet not placed | L" + effectiveLevel +
+                "\nReason: " + reason +
+                "\nPrediction will be tracked without staking.");
         }
     }
 
