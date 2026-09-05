@@ -1679,7 +1679,11 @@ async function handleLoss(userId, chatId, actual, num, betLevel, bets = [], sett
     if(pt.lossStreak > pt.maxL) pt.maxL = pt.lossStreak;
 
     if(betLevel < cfg.maxLvl){
-        const next = cfg.mode === "COMBINED" ? `Size ₹${getSequenceAmount(userId, st.sizeLevel, "size")} / Number ₹${getSequenceAmount(userId, st.numberLevel, "number")}` : (cfg.customBets[st.level-1] || (cfg.baseBet * MULT[st.level-1]));
+        const next = cfg.mode === "COMBINED"
+            ? `Size ₹${getSequenceAmount(userId, st.sizeLevel, "size")} / Number ₹${getSequenceAmount(userId, st.numberLevel, "number")}`
+            : cfg.mode === "NUMBER"
+                ? getSequenceAmount(userId, st.level, "number")
+                : getSequenceAmount(userId, st.level);
         await send(chatId,
 "╔══════════════════════════╗\n"+
 "║  ❌ LOSS                 ║\n"+
@@ -1796,7 +1800,7 @@ async function runPredict(userId, chatId) {
     } else {
         canBet = true;
         const curBet = cfg.mode === "NUMBER"
-            ? getSequenceAmount(userId, st.numberLevel, "number")
+            ? getSequenceAmount(userId, st.level, "number")
             : cfg.mode === "COMBINED"
                 ? `S₹${getSequenceAmount(userId, st.sizeLevel, "size")} / N₹${getSequenceAmount(userId, st.numberLevel, "number")}`
                 : getSequenceAmount(userId, st.level);
@@ -1837,7 +1841,9 @@ waitLine+"\n"+
         const combinedAmounts = getCombinedBetAmounts(userId, st.sizeLevel, st.numberLevel);
         for (const spec of specs) {
             const isNumber = spec.type === "NUMBER";
-            const levelForBet = isNumber ? st.numberLevel : st.sizeLevel;
+            const levelForBet = cfg.mode === "NUMBER"
+                ? st.level
+                : isNumber ? st.numberLevel : st.sizeLevel;
             const amount = cfg.mode === "NUMBER"
                 ? getSequenceAmount(userId, levelForBet, "number")
                 : cfg.mode === "SIZE"
@@ -2513,7 +2519,11 @@ function addHandlers(){
         if(text==="🤖 AutoBet Setup"){
             if(!hasAccess(id))return send(id,"❌ No access.");
             const cfg=autobetCfg[id],creds=userCreds[id]||{};
-            const amounts=cfg.customBets.slice(0,cfg.maxLvl);
+            const amounts = cfg.mode === "NUMBER"
+                ? cfg.customNumberBets.slice(0, cfg.maxLvl)
+                : cfg.mode === "COMBINED"
+                    ? cfg.customSizeBets.slice(0, cfg.maxLvl)
+                    : cfg.customBets.slice(0, cfg.maxLvl);
             const targetProfit = Number(cfg.targetProfit) || 1000;
             return send(id,
 "🤖 AUTOBET SETTINGS\n\n"+
@@ -2521,7 +2531,7 @@ function addHandlers(){
 "Token    : "+(getToken(id).length>20?"✅ SET":"❌ MISSING")+"\n"+
 "AutoLogin: "+(creds.phone?"✅ "+creds.phone.slice(0,6)+"***":"❌ /setcreds")+"\n"+
 "Mode     : "+modeLabel(cfg.mode)+"\n"+
-    (cfg.mode === "COMBINED" ? "Size Seq : ₹"+cfg.customSizeBets.join(" → ₹")+"\nNum Seq  : ₹"+cfg.customNumberBets.join(" → ₹")+"\nRule     : 1 site size + 1 site number\n" : "Bet Seq  : ₹"+cfg.customBets.join(" → ₹")+"\n")+
+    (cfg.mode === "COMBINED" ? "Size Seq : ₹"+cfg.customSizeBets.join(" → ₹")+"\nNum Seq  : ₹"+cfg.customNumberBets.join(" → ₹")+"\nRule     : 1 site size + 1 site number\n" : cfg.mode === "NUMBER" ? "Number Seq: ₹"+cfg.customNumberBets.join(" → ₹")+"\nRule     : exact predicted number only\n" : "Bet Seq  : ₹"+cfg.customBets.join(" → ₹")+"\n")+
 "Watch    : "+(cfg.watch?"ON":"OFF")+"\n"+
 "WatchLoss: "+cfg.watchLoss+" consecutive\n"+
 "Base Bet : ₹"+cfg.baseBet+"\n"+
