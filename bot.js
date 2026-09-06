@@ -756,7 +756,11 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
         if (state.history.length > 10) state.history.shift();
     }
 
-    // Watch/failed-bet results must not alter martingale state.
+    // Prediction direction always follows the result, even for WATCH results.
+    // A win keeps the analysis direction; a loss reverses it next time.
+    state.currentMode = wasWin ? "SAME" : "OPPOSITE";
+
+    // Watch/failed-bet results must not alter martingale betting state.
     if (!betPlaced) return;
 
     // A placed-bet win resets the martingale sequence to level 1.
@@ -765,7 +769,6 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
         st.inMart = false;
         st.level = 1;
         state.skipCount = 0;
-        state.currentMode = state.mode === "RECOVERY" ? "OPPOSITE" : "SAME";
         return;
     }
 
@@ -785,8 +788,6 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
         st.level = currentLevel + 1;
     }
 
-    // Mirror source mode in the existing target-state field.
-    state.currentMode = state.mode === "RECOVERY" ? "OPPOSITE" : "SAME";
 }
 
 function getStatus(userId) {
@@ -887,9 +888,7 @@ if (currentResult === 0) {
     // STEP 5: Analysis result from the calculated digit
     const analysis = lastDigit <= 4 ? 'SMALL' : 'BIG';
 
-    // STEP 6: Always predict the opposite of the analysis:
-    // analysis BIG   -> prediction SMALL
-    // analysis SMALL -> prediction BIG
+    // STEP 6: Always predict the opposite of the analysis.
     const prediction = analysis === 'BIG' ? 'SMALL' : 'BIG';
 
     return { 
@@ -897,9 +896,9 @@ if (currentResult === 0) {
         val: prediction, 
         conf: 90, 
         pat: sourceMode,
-        mode: sourceMode === "RECOVERY" ? "OPPOSITE" : "SAME",
+        mode: "OPPOSITE",
         analysis,
-        calculation: `(${nextLast3Num} × exp(${currentResult})) → ${lastDigit} → analysis:${analysis} → prediction:${prediction}` 
+        calculation: `(${nextLast3Num} × exp(${currentResult})) → ${lastDigit} → analysis:${analysis} → OPPOSITE prediction:${prediction}` 
     };
 }
 
