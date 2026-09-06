@@ -695,13 +695,15 @@ async function placeBet(userId, chatId, period, prediction, predType, level) {
 function initState(userId) {
     initUser(userId);
     if (!userStates[userId]) {
-        userStates[userId] = { resultHistory: [], skipCount: 0, currentMode: null, mode: "NORMAL", history: [], lastPrediction: null };
+        userStates[userId] = { resultHistory: [], skipCount: 0, currentMode: null, mode: "NORMAL", history: [], lastPrediction: null, predictionLosses: 0, predictionPhase: "PATTERN" };
     }
     const state = userStates[userId];
     if (!Array.isArray(state.resultHistory)) state.resultHistory = [];
     if (!Array.isArray(state.history)) state.history = [];
     if (state.mode !== "NORMAL" && state.mode !== "RECOVERY") state.mode = "NORMAL";
     if (typeof state.skipCount !== "number") state.skipCount = 0;
+    if (typeof state.predictionLosses !== "number") state.predictionLosses = 0;
+    if (!["PATTERN", "CALC_NORMAL", "RECOVERY"].includes(state.predictionPhase)) state.predictionPhase = "PATTERN";
     if (state.currentMode === undefined) state.currentMode = null;
     if (state.lastPrediction === undefined) state.lastPrediction = null;
     if (state.currentMode !== "SAME" && state.currentMode !== "OPPOSITE") state.currentMode = null;
@@ -756,9 +758,26 @@ function updateAfterResult(userId, wasWin, actualSize, betPlaced, usedMode) {
         if (state.history.length > 10) state.history.shift();
     }
 
-    // Prediction direction always follows the result, even for WATCH results.
-    // A win keeps the analysis direction; a loss reverses it next time.
-    state.currentMode = wasWin ? "SAME" : "OPPOSITE";
+    // Phase flow:
+    // PATTERN: three consecutive losses -> CALC_NORMAL.
+    // CALC_NORMAL: win -> PATTERN; loss -> RECOVERY.
+    // RECOVERY: win or loss -> PATTERN after this one recovery attempt.
+    if (wasWin) {
+        state.predictionLosses = 0;
+        state.predictionPhase = "PATTERN";
+    } else if (state.predictionPhase === "PATTERN") {
+        state.predictionLosses = (Number(state.predictionLosses) || 0) + 1;
+        if (state.predictionLosses >= 3) {
+            state.predictionPhase = "CALC_NORMAL";
+            state.predictionLosses = 0;
+        }
+    } else if (state.predictionPhase === "CALC_NORMAL") {
+        state.predictionPhase = "RECOVERY";
+        state.predictionLosses = 0;
+    } else {
+        state.predictionPhase = "PATTERN";
+        state.predictionLosses = 0;
+    }
 
     // Watch/failed-bet results must not alter martingale betting state.
     if (!betPlaced) return;
@@ -837,68 +856,83 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
 }
 
 // ============================================================
-// EXACT FORMULA PREDICTION LOGIC
-// next period last 3 digits × exp(current result)
-// 0-4 = SMALL, 5-9 = BIG; prediction is always opposite to the analysis.
+// LAST-TWO-RESULT PREDICTION LOGIC
+// SS / BB = SAME as the last result.
+// SB / BS = OPPOSITE to the last result.
+// After three consecutive losses, RECOVERY reverses the normal signal.
 // ============================================================
+function oppositeSize(size) {
+    return size === "BIG" ? "SMALL" : "BIG";
+}
+
+function patternPrediction(list) {
+    if (!Array.isArray(list) || list.length < 2) return null;
+
+    const pair = buildBSFromList(list, 2);
+    if (pair.length < 2 || !pair[0] || !pair[1]) return null;
+
+    const previous = pair[0] === "B" ? "BIG" : "SMALL";
+    const last = pair[1] === "B" ? "BIG" : "SMALL";
+    const samePattern = pair[0] === pair[1];
+
+    // SS/BB => same as last; SB/BS => opposite to last.
+    const normalPrediction = samePattern ? last : oppositeSize(last);
+    return { pair: pair.join(""), last, normalPrediction };
+}
+
+function calculationAnalysis(list) {
+    const currentPeriod = String(list?.[0]?.issueNumber ?? "");
+    const currentResult = parseInt(list?.[0]?.number ?? list?.[0]?.winNumber ?? "", 10);
+    if (!/^\d+$/.test(currentPeriod) || !Number.isInteger(currentResult) || currentResult === 0) return null;
+
+    const nextPeriod = (BigInt(currentPeriod) + 1n).toString();
+    const nextLast3Num = parseInt(nextPeriod.slice(-3), 10);
+    const answer = nextLast3Num * Math.exp(currentResult);
+    const digits = answer.toString().replace('.', '').substring(0, 14);
+    const lastDigit = parseInt(digits.charAt(digits.length - 1), 10);
+    if (!Number.isInteger(lastDigit)) return null;
+
+    return {
+        nextLast3Num,
+        currentResult,
+        lastDigit,
+        analysis: lastDigit <= 4 ? "SMALL" : "BIG"
+    };
+}
+
 function formulaPredict(list, userId) {
-    if (!list || list.length < 2) {
-        return null;
-    }
+    if (!list || list.length < 2) return null;
 
     initState(userId);
     const state = userStates[userId];
-    const sourceMode = state.mode;
+    const phase = state.predictionPhase || "PATTERN";
 
-    // ═════════════════════════════════════════════════════════════════════
-    //  L3+: FORCED WIN
-    // ═════════════════════════════════════════════════════════════════════
-    
+    if (phase === "PATTERN") {
+        const pattern = patternPrediction(list);
+        if (!pattern) return null;
+        return {
+            type: "SIZE",
+            val: pattern.normalPrediction,
+            conf: 90,
+            pat: pattern.pair,
+            mode: "PATTERN",
+            analysis: pattern.normalPrediction,
+            calculation: `${pattern.pair} → PATTERN → prediction:${pattern.normalPrediction}`
+        };
+    }
 
-
-    // ═════════════════════════════════════════════════════════════════════
-    //  L1-L2: NORMAL OR RECOVERY MODE
-    // ═════════════════════════════════════════════════════════════════════
-
-    const currentPeriod = String(list[0].issueNumber);
-    const currentResult = parseInt(list[0].number || list[0].winNumber || 0);
-
-
-// Previous result 0னா prediction வேண்டாம்
-if (currentResult === 0) {
-    return null;
-}
-
-    // STEP 1: Calculate next period
-    const nextPeriodNum = BigInt(currentPeriod) + 1n;
-    const nextPeriod = nextPeriodNum.toString();
-    const nextLast3Num = parseInt(nextPeriod.slice(-3));
-
-    // STEP 2: Calculate: NEXT_LAST_3 × exp(CURRENT_RESULT)
-    const answer = nextLast3Num * Math.exp(currentResult);
-
-    // STEP 3: Get 14 digits (remove decimal, take first 14)
-    const answerStr = answer.toString();
-    const noDecimal = answerStr.replace('.', '');
-    const first14 = noDecimal.substring(0, 14);
-
-    // STEP 4: Get last digit
-    const lastDigit = parseInt(first14.charAt(first14.length - 1));
-
-    // STEP 5: Analysis result from the calculated digit
-    const analysis = lastDigit <= 4 ? 'SMALL' : 'BIG';
-
-    // STEP 6: Always predict the opposite of the analysis.
-    const prediction = analysis === 'BIG' ? 'SMALL' : 'BIG';
+    const calc = calculationAnalysis(list);
+    if (!calc) return null;
+    const prediction = phase === "RECOVERY" ? oppositeSize(calc.analysis) : calc.analysis;
 
     return { 
-        type: 'SIZE', 
+        type: "SIZE", 
         val: prediction, 
         conf: 90, 
-        pat: sourceMode,
-        mode: "OPPOSITE",
-        analysis,
-        calculation: `(${nextLast3Num} × exp(${currentResult})) → ${lastDigit} → analysis:${analysis} → OPPOSITE prediction:${prediction}` 
+        pat: phase,
+        mode: phase,
+        analysis: calc.analysis,
+        calculation: `(${calc.nextLast3Num} × exp(${calc.currentResult})) → ${calc.lastDigit} → ${phase} analysis:${calc.analysis} → prediction:${prediction}`
     };
 }
 
