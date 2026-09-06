@@ -1053,7 +1053,9 @@ async function runPredict(userId, chatId) {
         }
     }
 
-    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced, signal.mode, effectiveLevel);
+    // Pass an immutable numeric snapshot; result handling must not read the
+    // martingale level again after it changes.
+    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced, signal.mode, Number(effectiveLevel));
 }
 // ============================================================
 //  RESULT CHECKER
@@ -1089,8 +1091,10 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         
         const win = predicted === actual;
         // Use the level shown with this prediction, even when AutoBet is OFF or the bet fails.
-        const maxBetLevel = Math.max(1, Math.min(10, Number(cfg.maxLvl) || 1));
-        const betLevel = Math.max(1, Math.min(maxBetLevel, Number(predictionLevel) || Number(st.level) || 1));
+        const capturedLevel = Number(predictionLevel);
+        const betLevel = Number.isInteger(capturedLevel) && capturedLevel >= 1
+            ? capturedLevel
+            : 1;
 
         // Keep the mode after a win; switch SAME <-> OPPOSITE after a loss.
         updateAfterResult(userId, win, actual, betPlaced, usedMode);
@@ -1178,7 +1182,7 @@ function showStats(chatId,userId){
         "📊 STATS\n\n"+
         "Total: "+d.total+"\nWins: "+d.win+"\nLosses: "+d.loss+"\nAcc: "+rate+"%\n"+bar+"\n\n"+
         "🏆 LEVEL WINS\n"+levelLines.join("\n")+"\n\n"+
-        "Current Mode: "+(userStates[userId]?.currentMode || "L1 START")+"\n"+
+        "Current Level: L"+(autobetState[userId]?.level || 1)+"\n"+
         "Best Win: "+d.maxWinStreak+" streak\nWorst Loss: "+d.maxLossStreak+" streak"
     );
 }
