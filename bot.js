@@ -254,8 +254,16 @@ async function getLiveBalance(userId, chatId = null) {
 }
 
 function initUser(id) {
-    if (!stats[id])        stats[id]        = { total:0,win:0,loss:0,lossStreak:0,winStreak:0,maxWinStreak:0,maxLossStreak:0,levelStats:{} };
+    if (!stats[id])        stats[id]        = { total:0,win:0,loss:0,lossStreak:0,winStreak:0,maxWinStreak:0,maxLossStreak:0,levelStats:{},levelWinCounts:{} };
     if (!stats[id].levelStats || typeof stats[id].levelStats !== "object") stats[id].levelStats = {};
+    if (!stats[id].levelWinCounts || typeof stats[id].levelWinCounts !== "object") stats[id].levelWinCounts = {};
+    // One-time migration for wins recorded before levelWinCounts existed.
+    if (Object.keys(stats[id].levelWinCounts).length === 0) {
+        for (const [level, value] of Object.entries(stats[id].levelStats)) {
+            const wins = Number(value?.wins) || 0;
+            if (wins > 0) stats[id].levelWinCounts[level] = wins;
+        }
+    }
    if (!userStates[id])   userStates[id]   = { resultHistory:[], skipCount:0, currentMode:null, lastPrediction:null };
     if (!sentPeriods[id])  sentPeriods[id]  = new Set();
     if (!autobetCfg[id])   autobetCfg[id]   = { 
@@ -1118,8 +1126,12 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         // watch predictions, and failed bets are all included.
         if (!s.levelStats[betLevel]) s.levelStats[betLevel] = { predictions: 0, wins: 0, losses: 0 };
         s.levelStats[betLevel].predictions++;
-        if (win) s.levelStats[betLevel].wins++;
-        else s.levelStats[betLevel].losses++;
+        if (win) {
+            s.levelStats[betLevel].wins++;
+            s.levelWinCounts[betLevel] = (Number(s.levelWinCounts[betLevel]) || 0) + 1;
+        } else {
+            s.levelStats[betLevel].losses++;
+        }
         if (win) {
             s.win++; s.winStreak++; s.lossStreak = 0;
             if (s.winStreak > s.maxWinStreak) s.maxWinStreak = s.winStreak;
@@ -1187,8 +1199,7 @@ function showStats(chatId,userId){
         .sort((a, b) => a - b);
     const levelLines = [];
     for (const level of observedLevels) {
-        const x = d.levelStats[level] || { predictions: 0, wins: 0, losses: 0 };
-        const wins = Number(x.wins) || 0;
+        const wins = Number(d.levelWinCounts[level]) || 0;
         // Show only levels that have actually won: L2:1, L4:2, ...
         if (wins > 0) levelLines.push(`L${level}:${wins}`);
     }
@@ -1222,7 +1233,7 @@ async function updateLiveStats(userId, chatId) {
         .sort((a, b) => a - b);
     const levelLines = [];
     for (const level of observedLevels) {
-        const wins = Number(d.levelStats[level]?.wins) || 0;
+        const wins = Number(d.levelWinCounts[level]) || 0;
         if (wins > 0) levelLines.push(`L${level}:${wins}`);
     }
     if (!levelLines.length) levelLines.push("No level wins yet");
