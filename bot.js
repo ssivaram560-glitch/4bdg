@@ -1182,16 +1182,17 @@ function showStats(chatId,userId){
     initUser(userId);
     const d=stats[userId], rate=d.total?((d.win/d.total)*100).toFixed(1):"0.0";
     const bar="🟦".repeat(d.total?Math.round(d.win/d.total*10):0)+"⬜".repeat(d.total?10-Math.round(d.win/d.total*10):10);
-    const observedLevels = Object.keys(d.levelStats || {}).map(Number).filter(Number.isFinite);
-    const maxLevel = observedLevels.length ? Math.max(...observedLevels) : 1;
+    const observedLevels = Object.keys(d.levelStats || {}).map(Number)
+        .filter(Number.isFinite)
+        .sort((a, b) => a - b);
     const levelLines = [];
-    for (let level = 1; level <= maxLevel; level++) {
+    for (const level of observedLevels) {
         const x = d.levelStats[level] || { predictions: 0, wins: 0, losses: 0 };
         const wins = Number(x.wins) || 0;
-        // Display only the live win count for each level: L1:26, L2:25, ...
-        // The value is updated whenever a prediction at that level wins.
-        levelLines.push(`L${level}:${wins}`);
+        // Show only levels that have actually won: L2:1, L4:2, ...
+        if (wins > 0) levelLines.push(`L${level}:${wins}`);
     }
+    if (!levelLines.length) levelLines.push("No level wins yet");
     const text =
         "📊 STATS\n\n"+
         "Total: "+d.total+"\nWins: "+d.win+"\nLosses: "+d.loss+"\nAcc: "+rate+"%\n"+bar+"\n\n"+
@@ -1216,12 +1217,15 @@ async function updateLiveStats(userId, chatId) {
     const rate = d.total ? ((d.win / d.total) * 100).toFixed(1) : "0.0";
     const bar = "🟦".repeat(d.total ? Math.round(d.win / d.total * 10) : 0) +
         "⬜".repeat(d.total ? 10 - Math.round(d.win / d.total * 10) : 10);
-    const maxLevel = Math.max(1, ...Object.keys(d.levelStats || {}).map(Number).filter(Number.isFinite));
+    const observedLevels = Object.keys(d.levelStats || {}).map(Number)
+        .filter(Number.isFinite)
+        .sort((a, b) => a - b);
     const levelLines = [];
-    for (let level = 1; level <= maxLevel; level++) {
+    for (const level of observedLevels) {
         const wins = Number(d.levelStats[level]?.wins) || 0;
-        levelLines.push(`L${level}:${wins}`);
+        if (wins > 0) levelLines.push(`L${level}:${wins}`);
     }
+    if (!levelLines.length) levelLines.push("No level wins yet");
     const text = "📊 STATS\n\n"+
         "Total: "+d.total+"\nWins: "+d.win+"\nLosses: "+d.loss+"\nAcc: "+rate+"%\n"+bar+"\n\n"+
         "🏆 LEVEL WINS\n"+levelLines.join("\n")+"\n\n"+
