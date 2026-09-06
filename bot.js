@@ -1170,9 +1170,9 @@ function showStats(chatId,userId){
     for (let level = 1; level <= maxLevel; level++) {
         const x = d.levelStats[level] || { predictions: 0, wins: 0, losses: 0 };
         const wins = Number(x.wins) || 0;
-        const losses = Number(x.losses) || 0;
-        const predictions = Number(x.predictions) || (wins + losses);
-        levelLines.push(`L${level}: ${wins}W / ${losses}L (${predictions} predictions)`);
+        // Display only the live win count for each level: L1:26, L2:25, ...
+        // The value is updated whenever a prediction at that level wins.
+        levelLines.push(`L${level}:${wins}`);
     }
     send(chatId,
         "📊 STATS\n\n"+
