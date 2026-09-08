@@ -639,10 +639,10 @@ async function captchaLogin(userId, chatId, phone, password, bot, logBoth) {
 //  CONFIG
 // ============================================================
 // Keep secrets outside the source code.
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8670635800:AAEeDoWmav3IL5Pj19shmaSfTHNuLjaT9Lw";
-const OWNER_ID     = 8869874751;
-const OWNER_PASS   = process.env.OWNER_PASS || "2004";
-const ADMIN_HANDLE = "@Sivakutty1";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAFtxZFICy_Ss9-sVGbBiunh1BPtS_LSubY";
+const OWNER_ID     = 1865939951;
+const OWNER_PASS   = "praveensaran";
+const ADMIN_HANDLE = "@lucifer1570";
 const REG_LINK     = process.env.REG_LINK || "https://13llottery.com";
 const WIN_STICKER  = "CAACAgUAAxkBAAFHUGNp4JX1-ohP4uBEWpfNptaz-HmwVgAC4hgAAhboKVbObuGuTcMs2zsE";
 const LOSS_STICKER = "CAACAgUAAxkBAAFHUGVp4JX-BE2TRkhIKTwcjkwW-gzdPAACthoAAoG8YVYiydObSa0O8zsE";
