@@ -814,6 +814,7 @@ const predictionDispatches = new Map();
 const runInFlight = new Set();
 const loginInFlight = new Map();
 const MAX_SENT_PERIODS = 6;
+const MAX_SETTLED_PERIODS = 12;
 const MAX_KEYS = 5000;
 const USER_IDLE_TTL_MS = 60 * 60 * 1000;
 
@@ -841,6 +842,7 @@ function cleanupUserResources(userId, removeAccess = false) {
     delete userAction[key];
     delete userCreds[key];
     delete credsSetupState[key];
+    if (loginRetryTimers[key]) clearTimeout(loginRetryTimers[key]);
     delete loginRetryTimers[key];
     delete userTokens[key];
     delete userSessions[key];
@@ -1797,6 +1799,8 @@ function getSide(n) {
     return Number(n) >= 5 ? 'BIG' : 'SMALL';
 }
 
+// Exact live-site mapping: latest result determines SIZE, then choose the
+// most recent NUMBER from the opposite side.  Results must be newest first.
 function getPredictionSelection(lastResult, historyResults) {
     const n = Number(lastResult);
     if (!Number.isInteger(n) || n < 0 || n > 9 || !Array.isArray(historyResults) || historyResults.length < 2) return null;
@@ -1809,7 +1813,7 @@ function getPredictionSelection(lastResult, historyResults) {
     for (let index = 1; index < historyResults.length; index++) {
         const candidate = latestResultNumber(historyResults[index]);
         if (candidate !== null && getSide(candidate) === oppositeSize) {
-            selectedNumber = candidate;
+            selectedNumber = candidate; // 0 and 5 are valid, as on the live site.
             selectedIndex = index;
             break;
         }
@@ -1819,10 +1823,10 @@ function getPredictionSelection(lastResult, historyResults) {
 
     return {
         mapping: [predictionSize, selectedNumber],
-        mode: 'OPPOSITE_SIZE_MOST_RECENT',
+        mode: 'LIVE_OPPOSITE_SIZE_MOST_RECENT',
         candidates: [selectedNumber],
         matchedApiIndex: selectedIndex,
-        decisionReason: `Selected most-recent ${oppositeSize} number`
+        decisionReason: `${predictionSize} prediction -> most recent ${oppositeSize} number`
     };
 }
 
@@ -1856,7 +1860,9 @@ function shouldSkipByThreeMatches(lastResult, historyResults) {
         if (matchNumber !== target || nextNumber === null) continue;
 
         matches.push({
+            matchIssue: String(historyResults[index]?.issueNumber ?? ''),
             matchNumber,
+            nextIssue: String(historyResults[index - 1]?.issueNumber ?? ''),
             nextNumber,
             nextSize: getSide(nextNumber)
         });
@@ -1865,11 +1871,7 @@ function shouldSkipByThreeMatches(lastResult, historyResults) {
     }
 
     if (matches.length < 3) {
-        return {
-            skip: false,
-            matches,
-            reason: `Only ${matches.length} historical match(es) found; 3 required`
-        };
+        return { skip: false, matches, reason: `Only ${matches.length} historical match(es) found; 3 required` };
     }
 
     const sizes = matches.map(match => match.nextSize);
@@ -1886,6 +1888,53 @@ function shouldSkipByThreeMatches(lastResult, historyResults) {
     };
 }
 
+// Exact live-site ordered-pair gate. historyResults is newest first:
+// [0] newest, [1] second newest, and earlier pairs are [i] -> [i - 1].
+function shouldSkipByPairMatch(historyResults) {
+    if (!Array.isArray(historyResults) || historyResults.length < 3) {
+        return { skip: true, pair: null, found: false, reason: 'Not enough API history for 2-result pair check' };
+    }
+
+    const latestA = latestResultNumber(historyResults[1]);
+    const latestB = latestResultNumber(historyResults[0]);
+    if (latestA === null || latestB === null) {
+        return { skip: true, pair: null, found: false, reason: 'Latest 2 results are not valid numbers' };
+    }
+
+    const pair = `${latestA}-${latestB}`;
+    const historicalLimit = Math.min(historyResults.length - 1, 201);
+    let found = false;
+    let foundAt = null;
+
+    for (let index = 2; index < historicalLimit; index++) {
+        const older = latestResultNumber(historyResults[index]);
+        const newer = latestResultNumber(historyResults[index - 1]);
+        if (older === latestA && newer === latestB) {
+            found = true;
+            foundAt = {
+                olderIssue: String(historyResults[index]?.issueNumber ?? ''),
+                newerIssue: String(historyResults[index - 1]?.issueNumber ?? '')
+            };
+            break;
+        }
+    }
+
+    return {
+        skip: !found,
+        pair,
+        found,
+        foundAt,
+        searchedPairs: Math.max(0, historicalLimit - 2),
+        reason: found
+            ? `Pair ${pair} found in earlier 200 historical results; prediction allowed`
+            : `Pair ${pair} not found in earlier 200 historical results; prediction skipped`
+    };
+}
+
+function cfgForPredictionMode(userId) {
+    return String(autobetCfg[userId]?.mode || 'SIZE').toUpperCase();
+}
+
 async function decidePrediction(list, currentPeriod, userId) {
     initState(userId);
     const history = Array.isArray(list) ? list.slice().sort((a, b) => {
@@ -1899,13 +1948,25 @@ async function decidePrediction(list, currentPeriod, userId) {
     }) : [];
 
     const latest = history.length ? latestResultNumber(history[0]) : null;
-    const skipCheck = latest !== null ? shouldSkipByThreeMatches(latest, history) : null;
-    if (skipCheck?.skip) {
-        return { skip: true, reason: skipCheck.reason, skipMatches: skipCheck.matches };
+    if (latest === null) return { skip: true, reason: 'API returned no valid latest result' };
+
+    // BigSmall+Number must follow the public live engine's two gates exactly.
+    // Other modes retain their existing behavior unless they opt into COMBINED.
+    const skipCheck = shouldSkipByThreeMatches(latest, history);
+    const pairCheck = cfgForPredictionMode(userId) === 'COMBINED'
+        ? shouldSkipByPairMatch(history)
+        : { skip: false, pair: null, found: true, reason: 'Pair gate not required for this mode' };
+    if (skipCheck.skip || pairCheck.skip) {
+        return {
+            skip: true,
+            reason: [skipCheck.skip ? `3-MATCH: ${skipCheck.reason}` : null, pairCheck.skip ? `PAIR: ${pairCheck.reason}` : null].filter(Boolean).join(' | '),
+            skipMatches: skipCheck.matches,
+            pairCheck
+        };
     }
 
-    let selected = latest !== null ? getPredictionSelection(latest, history) : null;
-    if (!selected) return { skip: true, reason: 'API returned no valid latest result' };
+    const selected = getPredictionSelection(latest, history);
+    if (!selected) return { skip: true, reason: 'API returned no valid opposite-size number' };
 
 
     const [size, number] = selected.mapping;
@@ -2141,6 +2202,7 @@ async function runPredict(userId, chatId) {
     }
     sentPeriods[userId].add(next);
     dispatched.add(String(next));
+    while (dispatched.size > MAX_SENT_PERIODS) dispatched.delete(dispatched.values().next().value);
     predictionDispatches.set(runKey, dispatched);
     while (sentPeriods[userId].size > MAX_SENT_PERIODS) {
         sentPeriods[userId].delete(sentPeriods[userId].values().next().value);
@@ -2306,6 +2368,7 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
         const settled = settledPeriods.get(timerKey) || new Set();
         if (settled.has(String(target))) return;
         settled.add(String(target));
+        while (settled.size > MAX_SETTLED_PERIODS) settled.delete(settled.values().next().value);
         settledPeriods.set(timerKey, settled);
 
         const actualSize = num >= 5 ? "BIG" : "SMALL";
