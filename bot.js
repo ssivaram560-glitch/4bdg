@@ -372,7 +372,7 @@ async function solveCaptcha(page) {
 }
 
 // ============================================================
-//  COMPLETE LOGIN WITH DIRECT URL NAVIGATION TO WINGO 30S
+//  COMPLETE LOGIN WITH DIRECT URL NAVIGATION TO WINGO 1M
 // ============================================================
 
 async function captchaLogin(userId, chatId, phone, password, bot, logBoth) {
@@ -567,8 +567,8 @@ async function captchaLogin(userId, chatId, phone, password, bot, logBoth) {
         } catch (e) {}
         await sleep(3000);
         
-        console.log('[LOGIN] Navigating to WinGo 30S page to trigger GetBalance request...');
-        console.log('[LOGIN] Navigating directly to WinGo 30S page via URL...');
+        console.log('[LOGIN] Navigating to WinGo 1M page to trigger GetBalance request...');
+        console.log('[LOGIN] Navigating directly to WinGo 1M page via URL...');
         try {
             await page.goto(SITE_URL + '/WinGo/WinGo_1M', {
                 waitUntil: 'domcontentloaded',
@@ -639,21 +639,21 @@ async function captchaLogin(userId, chatId, phone, password, bot, logBoth) {
 //  CONFIG
 // ============================================================
 // Keep secrets outside the source code.
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8999335291:AAFtxZFICy_Ss9-sVGbBiunh1BPtS_LSubY";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8977354327:AAEyS7_zS0kPFONt3aDDNRzvUWoWzO_tLGc";
 const OWNER_ID     = 1865939951;
 const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
-const REG_LINK     = process.env.REG_LINK || "https://13llottery.com";
+const REG_LINK     = "https://www.ts777.co";
 const WIN_STICKER  = "CAACAgUAAxkBAAFHUGNp4JX1-ohP4uBEWpfNptaz-HmwVgAC4hgAAhboKVbObuGuTcMs2zsE";
 const LOSS_STICKER = "CAACAgUAAxkBAAFHUGVp4JX-BE2TRkhIKTwcjkwW-gzdPAACthoAAoG8YVYiydObSa0O8zsE";
 
 const BET_URL     = "https://api.ar-lottery01.com/api/Lottery/WinGoBet";
 const LOGIN_URL   = "https://api.tashanrfv.com/api/webapi/Login";
 const CAPTCHA_URL = "https://13llottery.com/api/Home/Captcha";
-const API_URL     = process.env.API_URL || "https://luciferapi.com/index.php";
-const DRAW_URL    = API_URL;
-const SITE_URL    = process.env.SITE_URL || "https://13llottery.com";
-const LOGIN_PAGE_URL = process.env.LOGIN_PAGE_URL || `${SITE_URL}/login`;
+const API_URL     = "https://luciferapi.com";
+const DRAW_URL    = "https://luciferapi.com";
+const SITE_URL    = "https://www.ts777.co";
+const LOGIN_PAGE_URL = "https://www.ts777.co/login";
 const CHROME_ARGS = [
     '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu',
     '--disable-dev-shm-usage', '--disable-extensions', '--disable-background-networking',
@@ -663,8 +663,8 @@ const CHROME_ARGS = [
 
 // Martingale multipliers — user can customize base bet
 const MULT = [1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683]; // Standard 3x Martingale multipliers
-const SIZE_WIN_MULTIPLIER = 1.8;    // User rule: BIG/SMALL gross return multiplier
-const NUMBER_WIN_MULTIPLIER = 8.9;  // User rule: exact-number gross return multiplier
+const SIZE_WIN_MULTIPLIER = 1.98;   // Gross return for a BIG/SMALL win
+const NUMBER_WIN_MULTIPLIER = 8;    // Gross return for an exact-number win
 
 // ============================================================
 //  RENDER KEEP-ALIVE
@@ -814,9 +814,6 @@ const predictionDispatches = new Map();
 const runInFlight = new Set();
 const loginInFlight = new Map();
 const MAX_SENT_PERIODS = 6;
-const MAX_SETTLED_PERIODS = 12;
-// Keep the live prediction history bounded on the free Render instance.
-const MAX_HISTORY_RESULTS = 300;
 const MAX_KEYS = 5000;
 const USER_IDLE_TTL_MS = 60 * 60 * 1000;
 
@@ -844,7 +841,6 @@ function cleanupUserResources(userId, removeAccess = false) {
     delete userAction[key];
     delete userCreds[key];
     delete credsSetupState[key];
-    if (loginRetryTimers[key]) clearTimeout(loginRetryTimers[key]);
     delete loginRetryTimers[key];
     delete userTokens[key];
     delete userSessions[key];
@@ -901,6 +897,8 @@ function scheduleRun(userId, chatId, delayMs) {
     nextRunTimers.set(key, timer);
 }
 const MAX_LEVEL_HISTORY = 10;
+let consecutiveSkipRemaining = 0;
+let consecutiveSkipTriggerKey = null;
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -925,12 +923,6 @@ async function fetchList() {
             Array.isArray(json?.results) ? json.results :
             Array.isArray(json?.records) ? json.records :
             Array.isArray(json?.result?.list) ? json.result.list : [];
-        // luciferapi.com is the same source used by the Netlify prediction page.
-        // It returns { success, data: [...] }; reject malformed/empty payloads early.
-        if (json?.success === false || !Array.isArray(rawList)) {
-            console.error("[FETCH LIST ERROR] Live prediction API returned an invalid payload");
-            return null;
-        }
 
         if (!rawList.length) {
             console.error("[FETCH LIST ERROR] Lucifer API response was not a list");
@@ -960,9 +952,52 @@ async function fetchList() {
                 return bi.localeCompare(ai);
             }
             return 0;
-        }).slice(0, MAX_HISTORY_RESULTS);
+        });
     } catch (error) {
         console.error("[FETCH LIST ERROR]", error.message);
+    }
+
+    try {
+        const fallbackResponse = await axios.get("https://gorgeous-maamoul-72bc10.netlify.app/", {
+            timeout: 15000,
+            headers: {
+                "Accept": "text/html,application/xhtml+xml",
+                "User-Agent": "Mozilla/5.0"
+            }
+        });
+
+        const html = String(fallbackResponse?.data || "");
+        const issueMatch = html.match(/Issue\s+(\d+)\s+·\s+Active prediction/i) || html.match(/Issue\s+(\d+)/i);
+        const lastResultMatch = html.match(/CURRENT LAST RESULT\s+(\d+)\s*\(([A-Z]+)\)/i);
+        const historyMatches = [...html.matchAll(/R\d+\s*[^\d]*(\d+)(?:\s*(?:SMALL|BIG))?/gi)];
+
+        const fallbackList = [];
+        if (issueMatch && lastResultMatch) {
+            fallbackList.push({
+                issueNumber: issueMatch[1],
+                number: lastResultMatch[1]
+            });
+        }
+
+        const history = historyMatches
+            .map(match => match[1])
+            .filter((value, index, arr) => value && arr.indexOf(value) === index)
+            .slice(0, 10)
+            .map((value, index) => ({
+                issueNumber: String(Date.now() + index),
+                number: value
+            }));
+
+        if (fallbackList.length) {
+            const merged = [...history, ...fallbackList].filter(item => /^[0-9]$/.test(String(item.number).replace(/\D/g, ""))).slice(0, 8);
+            if (merged.length) return merged.sort((a, b) => String(b.issueNumber).localeCompare(String(a.issueNumber)));
+        }
+
+        if (history.length) return history.slice(0, 8);
+        console.error("[FETCH LIST ERROR] Public prediction page fallback did not contain a valid latest result");
+        return null;
+    } catch (fallbackError) {
+        console.error("[FETCH LIST ERROR] Fallback source also failed:", fallbackError.message);
         return null;
     }
 }
@@ -1064,8 +1099,7 @@ function initUser(id) {
             startLevel: 1,
             currentLevel: 1,
             profitSwitchStep: 0,
-            nextProfitSwitch: 0,
-            balanceSwitches: []
+            nextProfitSwitch: 0
         }
     };
     if (autobetCfg[id].mode !== "SIZE" && autobetCfg[id].mode !== "NUMBER" && autobetCfg[id].mode !== "COMBINED") autobetCfg[id].mode = "SIZE";
@@ -1091,8 +1125,7 @@ function initUser(id) {
     if (!Number.isInteger(autobetState[id].numberLevel) || autobetState[id].numberLevel < 1) autobetState[id].numberLevel = autobetState[id].level || 1;
     if (!autobetState[id].sizeLevelHistory || typeof autobetState[id].sizeLevelHistory !== "object") autobetState[id].sizeLevelHistory = {};
     if (!autobetState[id].numberLevelHistory || typeof autobetState[id].numberLevelHistory !== "object") autobetState[id].numberLevelHistory = {};
-    if (!profitTrack[id])  profitTrack[id]  = { totalBets:0, wins:0, losses:0, pnl:0, winStreak:0, lossStreak:0, maxW:0, maxL:0, totalBetAmount: 0, lossStreakHits: 0, lossCarry: 0 };
-    if (!Number.isFinite(Number(profitTrack[id].lossCarry)) || profitTrack[id].lossCarry < 0) profitTrack[id].lossCarry = 0;
+    if (!profitTrack[id])  profitTrack[id]  = { totalBets:0, wins:0, losses:0, pnl:0, winStreak:0, lossStreak:0, maxW:0, maxL:0, totalBetAmount: 0, lossStreakHits: 0 };
     if (!Number.isFinite(Number(profitTrack[id].maxW)) || profitTrack[id].maxW < 0) profitTrack[id].maxW = 0;
     if (!Number.isFinite(Number(profitTrack[id].maxL)) || profitTrack[id].maxL < 0) profitTrack[id].maxL = 0;
     if (!Number.isFinite(Number(profitTrack[id].winStreak)) || profitTrack[id].winStreak < 0) profitTrack[id].winStreak = 0;
@@ -1655,14 +1688,6 @@ function createWalletPlan(walletBalance, levels) {
     });
 }
 
-function getBalanceSwitchLevel(plan, walletBalance) {
-    const fallback = Math.max(1, Math.min(10, Number(plan.startLevel) || 1));
-    const switches = Array.isArray(plan.balanceSwitches) ? plan.balanceSwitches : [];
-    return switches.reduce((level, rule) => {
-        return walletBalance >= Number(rule.balance) ? Number(rule.level) : level;
-    }, fallback);
-}
-
 function syncProfitPlan(userId, reason = "balance", planBalance = null, maxLevel = null) {
     const cfg = autobetCfg[userId];
     if (!cfg || !cfg.profitPlan || !cfg.profitPlan.enabled) return false;
@@ -1673,7 +1698,8 @@ function syncProfitPlan(userId, reason = "balance", planBalance = null, maxLevel
     const configuredMaxLevel = Number(maxLevel ?? plan.maxLevel ?? cfg.maxLvl);
     const levels = Math.floor(configuredMaxLevel);
     if (configuredBalance <= 0 || !Number.isInteger(levels) || levels <= 0 || levels > 10 || configuredBalance < levels) return false;
-    const startLevel = Math.min(levels, getBalanceSwitchLevel(plan, configuredBalance));
+
+    const startLevel = Math.max(1, Math.min(levels, Number(plan.startLevel) || 1));
     const walletPlan = createWalletPlan(Math.max(0, configuredBalance), levels);
     const totals = walletPlan.map(row => row.total);
     const sizeBets = walletPlan.map(row => row.bs);
@@ -1690,7 +1716,6 @@ function syncProfitPlan(userId, reason = "balance", planBalance = null, maxLevel
     cfg.customNumberBets = numberBets;
     cfg.maxLvl = walletPlan.length;
 
-    // Losses keep martingale progression; wins restart at the balance-selected level.
     if (autobetState[userId] && reason !== "loss") {
         autobetState[userId].level = startLevel;
         autobetState[userId].sizeLevel = startLevel;
@@ -1807,8 +1832,6 @@ function getSide(n) {
     return Number(n) >= 5 ? 'BIG' : 'SMALL';
 }
 
-// Exact live-site mapping: latest result determines SIZE, then choose the
-// most recent NUMBER from the opposite side.  Results must be newest first.
 function getPredictionSelection(lastResult, historyResults) {
     const n = Number(lastResult);
     if (!Number.isInteger(n) || n < 0 || n > 9 || !Array.isArray(historyResults) || historyResults.length < 2) return null;
@@ -1821,7 +1844,7 @@ function getPredictionSelection(lastResult, historyResults) {
     for (let index = 1; index < historyResults.length; index++) {
         const candidate = latestResultNumber(historyResults[index]);
         if (candidate !== null && getSide(candidate) === oppositeSize) {
-            selectedNumber = candidate; // 0 and 5 are valid, as on the live site.
+            selectedNumber = candidate;
             selectedIndex = index;
             break;
         }
@@ -1831,10 +1854,10 @@ function getPredictionSelection(lastResult, historyResults) {
 
     return {
         mapping: [predictionSize, selectedNumber],
-        mode: 'LIVE_OPPOSITE_SIZE_MOST_RECENT',
+        mode: 'OPPOSITE_SIZE_MOST_RECENT',
         candidates: [selectedNumber],
         matchedApiIndex: selectedIndex,
-        decisionReason: `${predictionSize} prediction -> most recent ${oppositeSize} number`
+        decisionReason: `Selected most-recent ${oppositeSize} number`
     };
 }
 
@@ -1939,6 +1962,29 @@ function shouldSkipByPairMatch(historyResults) {
     };
 }
 
+function getConsecutivePairCheck(historyResults) {
+    if (!Array.isArray(historyResults) || historyResults.length < 2) {
+        return { consecutive: false, pair: null, reason: 'Not enough API history for consecutive pair check' };
+    }
+
+    const a = latestResultNumber(historyResults[1]);
+    const b = latestResultNumber(historyResults[0]);
+    if (a === null || b === null) {
+        return { consecutive: false, pair: null, reason: 'Latest 2 results are not valid numbers' };
+    }
+
+    const pair = `${a}-${b}`;
+    const consecutive = Number.isInteger(a) && Number.isInteger(b) && a >= 0 && a <= 9 && b >= 0 && b <= 9 && Math.abs(a - b) === 1;
+
+    return {
+        consecutive,
+        pair,
+        reason: consecutive
+            ? `Consecutive pair ${pair} detected`
+            : `Pair ${pair} is not consecutive`
+    };
+}
+
 function cfgForPredictionMode(userId) {
     return String(autobetCfg[userId]?.mode || 'SIZE').toUpperCase();
 }
@@ -1958,12 +2004,27 @@ async function decidePrediction(list, currentPeriod, userId) {
     const latest = history.length ? latestResultNumber(history[0]) : null;
     if (latest === null) return { skip: true, reason: 'API returned no valid latest result' };
 
-    // BigSmall+Number must follow the public live engine's two gates exactly.
-    // Other modes retain their existing behavior unless they opt into COMBINED.
+    const consecutiveCheck = getConsecutivePairCheck(history);
+    if (consecutiveCheck.consecutive) {
+        const key = `${String(history[0]?.issueNumber ?? history[0]?.issue ?? '')}|${consecutiveCheck.pair}`;
+        if (key !== consecutiveSkipTriggerKey) {
+            consecutiveSkipTriggerKey = key;
+            consecutiveSkipRemaining = 2;
+        }
+
+        if (consecutiveSkipRemaining > 0) {
+            consecutiveSkipRemaining--;
+            return {
+                skip: true,
+                reason: `CONSECUTIVE SKIP ⏭️ — ${consecutiveCheck.pair} → ${consecutiveSkipRemaining} skip(s) remaining`,
+                consecutiveCheck,
+                consecutiveSkipRemaining
+            };
+        }
+    }
+
     const skipCheck = shouldSkipByThreeMatches(latest, history);
-    const pairCheck = cfgForPredictionMode(userId) === 'COMBINED'
-        ? shouldSkipByPairMatch(history)
-        : { skip: false, pair: null, found: true, reason: 'Pair gate not required for this mode' };
+    const pairCheck = shouldSkipByPairMatch(history);
     if (skipCheck.skip || pairCheck.skip) {
         return {
             skip: true,
@@ -1975,7 +2036,6 @@ async function decidePrediction(list, currentPeriod, userId) {
 
     const selected = getPredictionSelection(latest, history);
     if (!selected) return { skip: true, reason: 'API returned no valid opposite-size number' };
-
 
     const [size, number] = selected.mapping;
     userStates[userId].lastPrediction = size;
@@ -2084,13 +2144,8 @@ async function sendResultAmountLine(chatId, userId, label, amount) {
 async function handleWin(userId, chatId, actual, num, betLevel, bets = [], settlement = null) {
     const pt = profitTrack[userId];
     const amt = bets.length ? bets.reduce((sum, b) => sum + Number(b.amt || 0), 0) : getSequenceAmount(userId, betLevel);
-    const roundNet = settlement
-        ? Number(settlement.pnl) || 0
-        : amt * (autobetCfg[userId].mode === "NUMBER" ? NUMBER_WIN_MULTIPLIER - 1 : SIZE_WIN_MULTIPLIER - 1);
-    const previousLoss = Math.max(0, Number(pt.lossCarry) || 0);
-    const recoveredLoss = Math.min(previousLoss, Math.max(0, roundNet));
-    const profit = roundNet - recoveredLoss;
-    pt.lossCarry = Math.max(0, previousLoss - recoveredLoss);
+    let profit;
+    profit = settlement ? Number(settlement.pnl) || 0 : amt * (autobetCfg[userId].mode === "NUMBER" ? NUMBER_WIN_MULTIPLIER - 1 : SIZE_WIN_MULTIPLIER - 1);
     
     pt.totalBets++; pt.wins++; pt.pnl += profit; 
     pt.totalBetAmount = (pt.totalBetAmount || 0) + amt;
@@ -2098,8 +2153,7 @@ async function handleWin(userId, chatId, actual, num, betLevel, bets = [], settl
     if(pt.winStreak > pt.maxW) pt.maxW = pt.winStreak;
     const plan = autobetCfg[userId].profitPlan;
     const switchStep = Math.floor(Number(plan?.profitSwitchStep) || 0);
-    const hasBalanceSwitches = plan?.enabled && Array.isArray(plan.balanceSwitches) && plan.balanceSwitches.length > 0;
-    const shouldSwitchPlan = !plan?.enabled || switchStep <= 0 || pt.pnl >= Number(plan.nextProfitSwitch || switchStep) || hasBalanceSwitches;
+    const shouldSwitchPlan = plan?.enabled && switchStep > 0 && pt.pnl >= Number(plan.nextProfitSwitch || switchStep);
     if (shouldSwitchPlan) {
         const previousLevel = Number(plan?.currentLevel) || 1;
         await refreshWalletPlan(userId, "win");
@@ -2110,9 +2164,8 @@ async function handleWin(userId, chatId, actual, num, betLevel, bets = [], settl
             const currentLevel = Number(plan.currentLevel) || 1;
             const sizePlan = (autobetCfg[userId].customSizeBets || []).slice(0, autobetCfg[userId].maxLvl).join(" → ₹");
             const numberPlan = (autobetCfg[userId].customNumberBets || []).slice(0, autobetCfg[userId].maxLvl).join(" → ₹");
-            const switchLabel = currentLevel !== previousLevel ? "💰 Balance switch" : "🔄 Plan switched";
             await send(chatId,
-                switchLabel + ": L" + previousLevel + " → L" + currentLevel +
+                "🔄 Plan switched: L" + previousLevel + " → L" + currentLevel +
                 "\nSize: ₹" + sizePlan +
                 "\nNumber: ₹" + numberPlan
             );
@@ -2131,17 +2184,13 @@ async function handleLoss(userId, chatId, actual, num, betLevel, bets = [], sett
     const pt = profitTrack[userId];
     const amt = bets.length ? bets.reduce((sum, b) => sum + Number(b.amt || 0), 0) : getSequenceAmount(userId, betLevel);
     
-    const roundLoss = settlement
-        ? Math.max(0, -(Number(settlement.pnl) || 0))
-        : amt;
-    pt.lossCarry = (Number(pt.lossCarry) || 0) + roundLoss;
-    pt.totalBets++; pt.losses++; pt.pnl -= roundLoss;
+    pt.totalBets++; pt.losses++; pt.pnl += settlement ? settlement.pnl : -amt; 
     pt.totalBetAmount = (pt.totalBetAmount || 0) + amt;
     pt.lossStreak++; pt.winStreak = 0;
     if(pt.lossStreak > pt.maxL) pt.maxL = pt.lossStreak;
 
     const plan = autobetCfg[userId].profitPlan;
-    if (plan?.enabled && Array.isArray(plan.balanceSwitches) && plan.balanceSwitches.length > 0) {
+    if (plan?.enabled && plan?.profitSwitchStep > 0 && pt.pnl <= 0) {
         await refreshWalletPlan(userId, "loss");
     }
 
@@ -2210,16 +2259,9 @@ async function runPredict(userId, chatId) {
     }
     sentPeriods[userId].add(next);
     dispatched.add(String(next));
-    while (dispatched.size > MAX_SENT_PERIODS) dispatched.delete(dispatched.values().next().value);
     predictionDispatches.set(runKey, dispatched);
     while (sentPeriods[userId].size > MAX_SENT_PERIODS) {
         sentPeriods[userId].delete(sentPeriods[userId].values().next().value);
-    }
-    // Keep the dispatch map bounded even if a user repeatedly starts/stops the engine.
-    while (predictionDispatches.size > MAX_KEYS) {
-        const oldestKey = predictionDispatches.keys().next().value;
-        if (oldestKey === undefined) break;
-        predictionDispatches.delete(oldestKey);
     }
 
     initState(userId);
@@ -2252,10 +2294,10 @@ async function runPredict(userId, chatId) {
 "║    👑 EARN WITH ME AI    ║\n"+
 "╠══════════════════════════╣\n"+
 "║ Period  : "+next.slice(-6)+"\n"+
-"║ Mode    : "+modeLabel(cfg.mode)+"\n"+
+"║ Mode    : BIG/SMALL\n"+
 "║ Size    : "+signal.val+"\n"+
 "║ Result  : "+formatPrediction(signal)+"\n"+
-"║ Source  : Live prediction site\n"+
+"║ Source  : Live Jade site\n"+
 "╠══════════════════════════╣\n"+
 "║ "+abLine+"\n"+
 waitLine+"\n"+
@@ -2382,7 +2424,6 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
         const settled = settledPeriods.get(timerKey) || new Set();
         if (settled.has(String(target))) return;
         settled.add(String(target));
-        while (settled.size > MAX_SETTLED_PERIODS) settled.delete(settled.values().next().value);
         settledPeriods.set(timerKey, settled);
 
         const actualSize = num >= 5 ? "BIG" : "SMALL";
@@ -2395,6 +2436,9 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
         const sizeMatched = evaluationBets.some(b => b.type === "SIZE" && b.val === actualSize);
         const numberMatched = evaluationBets.some(b => b.type === "NUMBER" && Number(b.val) === num);
         const isCombinedBet = evaluationBets.some(b => b.type === "SIZE") && evaluationBets.some(b => b.type === "NUMBER");
+        // In COMBINED mode, a NUMBER win resets both size and number levels,
+        // even if the size leg was not placed or did not match.
+        const combinedResult = cfg.mode === "COMBINED" && (isCombinedBet || numberMatched);
         const settlement = betPlaced ? calculateSettlement(bets, actualSize, num) : null;
         const win = settlement ? settlement.won : evaluationBets.some(b => b.type === "NUMBER"
             ? Number(b.val) === num
@@ -2409,12 +2453,12 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
             while (keys.length > MAX_LEVEL_HISTORY) delete st.levelHistory[keys.shift()];
         }
 
-        if (isCombinedBet) updateCombinedAfterResult(userId, sizeMatched, numberMatched, betPlaced);
+        if (combinedResult) updateCombinedAfterResult(userId, sizeMatched, numberMatched, betPlaced);
         else updateAfterResult(userId, win, actualSize, betPlaced);
 
         const s = stats[userId];
         if (betPlaced) {
-            if (isCombinedBet) {
+            if (combinedResult) {
                 if (sizeMatched) s.sizeLevelWins["L" + sizeBetLevel] = (s.sizeLevelWins["L" + sizeBetLevel] || 0) + 1;
                 if (numberMatched) s.numberLevelWins["L" + numberBetLevel] = (s.numberLevelWins["L" + numberBetLevel] || 0) + 1;
             } else if (win) {
@@ -2505,7 +2549,6 @@ function showStats(chatId,userId){
 "Loss streak : "+(d.lossStreak||0)+" | Worst: "+(d.maxLossStreak||0)+"\n"+
 "Streak hits : "+(pt.lossStreakHits||0)+" (threshold L"+(autobetCfg[userId].watchLoss||1)+")\n"+
 "P&L         : "+(pt.pnl>=0?"+":"")+Number(pt.pnl||0).toFixed(2)+"\n"+
-"Loss carry  : ₹"+Number(pt.lossCarry||0).toFixed(2)+"\n"+
 "Staked      : ₹"+Number(pt.totalBetAmount||0).toFixed(2)+"\n\n"+
 "Level wins  : "+levelMapText(d.levelWins)+"\n"+
 "Level usage : "+levelMapText(st.levelHistory)+"\n"+
@@ -2529,7 +2572,6 @@ async function profitReport(chatId,userId){
 "Balance: "+balance+"\n"+
 "Bets   : "+pt.totalBets+"\nWins   : "+pt.wins+"\nLoss   : "+pt.losses+"\nRate   : "+rate+"%\n"+
 "P&L    : "+(pt.pnl>=0?"+":"")+pt.pnl.toFixed(2)+"\n"+
-"Loss carry: ₹"+Number(pt.lossCarry||0).toFixed(2)+"\n"+
 "Streak : "+pt.winStreak+"W / "+pt.lossStreak+"L\n"+
 "Streak hits: "+(pt.lossStreakHits||0)+" (threshold L"+(cfg.watchLoss||1)+")\n"+
 "Best W : "+Number(pt.maxW||0)+" | Max loss streak: "+Number(pt.maxL||0)+"\n"+
@@ -2588,7 +2630,6 @@ waitLine+"\n"+
 (cfg.mode === "COMBINED" ? "Size Hist: "+(Object.entries(st.sizeLevelHistory||{}).map(([level,count]) => level+":"+count).join(" | ") || "None")+"\nNumber Hist: "+(Object.entries(st.numberLevelHistory||{}).map(([level,count]) => level+":"+count).join(" | ") || "None")+"\n" : "History  : "+(Object.entries(st.levelHistory||{}).map(([level,count]) => level+":"+count).join(" | ") || "None")+"\n")+
 "Wins Lvl : "+(cfg.mode === "COMBINED" ? "Size "+levelMapText(stats[userId].sizeLevelWins)+" | Number "+levelMapText(stats[userId].numberLevelWins) : levelMapText(stats[userId].levelWins))+"\n"+
 "P&L      : "+(pt.pnl>=0?"+":"")+pt.pnl.toFixed(2)+"\n\n"+
-"Loss carry: ₹"+Number(pt.lossCarry||0).toFixed(2)+"\n\n"+
 formatMartingale(cfg)
     );
 }
@@ -2612,7 +2653,6 @@ const autobetMenu={keyboard:[
     ["💰 Set Base Bet","📈 Set Max Level"],
     ["🧠 Set Plan Level","🎯 Set Profit Target"],
     ["💹 Set Profit Switch"],
-    ["🔁 Set Balance Switch","🗑 Clear Balance Switch"],
     ["⏳ Set Section Delay","🔢 Set Watch Losses"],
     ["📊 AutoBet Status","🔀 Customize Bet"],
     ["🎮 Mode: Big/Small","🔢 Mode: Number"],
@@ -3074,16 +3114,6 @@ formatMartingale(cfg)+"\n\n"+
             userAction[id]={action:"setprofitswitch"};
             return send(id,"Enter profit switch amount in whole rupees:\nExample: 5 or 10\n\nThe plan switches after each cumulative profit step.");
         }
-        if(text==="🔁 Set Balance Switch"){
-            userAction[id]={action:"setbalanceswitch"};
-            return send(id,"Enter balance switches, for example:\n5000:2,10000:4,25000:6\n\nFormat: balance:level");
-        }
-        if(text==="🗑 Clear Balance Switch"){
-            autobetCfg[id].profitPlan = autobetCfg[id].profitPlan || { enabled:false, startLevel:1, currentLevel:1, balanceSwitches:[] };
-            autobetCfg[id].profitPlan.balanceSwitches = [];
-            if (autobetCfg[id].profitPlan.enabled) await refreshWalletPlan(id, "switch-clear");
-            return send(id,"✅ Balance switches cleared. The configured start level is now used.",{reply_markup:autobetMenu});
-        }
                 // --- SETTINGS TRIGGERS ---
         if(text==="🎯 Set Profit Target"){userAction[id]={action:"settarget"};return send(id,"Enter target profit (Min ₹10):");}
         if(text==="⏳ Set Section Delay"){userAction[id]={action:"setdelay"};return send(id,"Enter restart delay in MINUTES (e.g. 30):");}
@@ -3116,7 +3146,7 @@ if(text==="🔢 Set Watch Losses"){
                 if (!Number.isFinite(planBalance) || planBalance <= 0 || planBalance < maxLevel) {
                     return send(id, "❌ Actual wallet balance ₹" + (Number.isFinite(planBalance) ? planBalance : 0) + " is too low for " + maxLevel + " levels.");
                 }
-                if (!autobetCfg[id].profitPlan) autobetCfg[id].profitPlan = { enabled: false, startLevel: 1, currentLevel: 1, balanceSwitches: [] };
+                if (!autobetCfg[id].profitPlan) autobetCfg[id].profitPlan = { enabled: false, startLevel: 1, currentLevel: 1 };
                 autobetCfg[id].profitPlan.enabled = true;
                 autobetCfg[id].profitPlan.startLevel = 1;
                 autobetCfg[id].profitPlan.currentLevel = 1;
@@ -3132,7 +3162,7 @@ if(text==="🔢 Set Watch Losses"){
                 if (!Number.isInteger(step) || step <= 0) {
                     return send(id, "❌ Enter a whole positive amount, for example: 5 or 10");
                 }
-                if (!autobetCfg[id].profitPlan) autobetCfg[id].profitPlan = { enabled: false, startLevel: 1, currentLevel: 1, balanceSwitches: [] };
+                if (!autobetCfg[id].profitPlan) autobetCfg[id].profitPlan = { enabled: false, startLevel: 1, currentLevel: 1 };
                 autobetCfg[id].profitPlan.profitSwitchStep = step;
                 autobetCfg[id].profitPlan.nextProfitSwitch = step;
                 delete userAction[id];
@@ -3147,25 +3177,6 @@ if(text==="🔢 Set Watch Losses"){
                 if (autobetCfg[id].profitPlan.enabled) await refreshWalletPlan(id, "level");
                 delete userAction[id];
                 return send(id, "✅ Profit plan started at L" + v + ".\nEach win updates the auto bet plan and syncs custom bets.", {reply_markup: autobetMenu});
-            }
-            else if(s.action === "setbalanceswitch"){
-                const rules = text.split(/[,;]+/).map(item => {
-                    const parts = item.trim().split(/[:=]/);
-                    return { balance: Number(parts[0]), level: Number(parts[1]) };
-                });
-                if (!rules.length || rules.some(rule =>
-                    !Number.isFinite(rule.balance) || rule.balance <= 0 ||
-                    !Number.isInteger(rule.level) || rule.level < 1 || rule.level > 10
-                )) {
-                    return send(id,"❌ Invalid format. Use: 5000:2,10000:4");
-                }
-                const uniqueBalances = new Set(rules.map(rule => rule.balance));
-                if (uniqueBalances.size !== rules.length) return send(id,"❌ Duplicate balance thresholds are not allowed.");
-                if (!autobetCfg[id].profitPlan) autobetCfg[id].profitPlan = { enabled:false, startLevel:1, currentLevel:1, balanceSwitches:[] };
-                autobetCfg[id].profitPlan.balanceSwitches = rules.sort((a, b) => a.balance - b.balance);
-                delete userAction[id];
-                if (autobetCfg[id].profitPlan.enabled) await refreshWalletPlan(id, "switch-set");
-                return send(id,"✅ Balance switches saved:\n" + rules.map(rule => "₹" + rule.balance + " → L" + rule.level).join("\n"),{reply_markup:autobetMenu});
             }
             else if(s.action === "settarget"){
                 const v = Number(text);
