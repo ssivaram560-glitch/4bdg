@@ -639,9 +639,9 @@ async function captchaLogin(userId, chatId, phone, password, bot, logBoth) {
 //  CONFIG
 // ============================================================
 // Keep secrets outside the source code.
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8670635800:AAEeDoWmav3IL5Pj19shmaSfTHNuLjaT9Lw";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "";
 const OWNER_ID     = 8869874751;
-const OWNER_PASS   = process.env.OWNER_PASS || "2004";
+const OWNER_PASS   = process.env.OWNER_PASS || "";
 const ADMIN_HANDLE = "@Sivakutty1";
 const REG_LINK     = process.env.REG_LINK || "https://13llottery.com";
 const WIN_STICKER  = "CAACAgUAAxkBAAFHUGNp4JX1-ohP4uBEWpfNptaz-HmwVgAC4hgAAhboKVbObuGuTcMs2zsE";
@@ -650,7 +650,7 @@ const LOSS_STICKER = "CAACAgUAAxkBAAFHUGVp4JX-BE2TRkhIKTwcjkwW-gzdPAACthoAAoG8YV
 const BET_URL     = "https://api.ar-lottery01.com/api/Lottery/WinGoBet";
 const LOGIN_URL   = "https://api.tashanrfv.com/api/webapi/Login";
 const CAPTCHA_URL = "https://13llottery.com/api/Home/Captcha";
-const API_URL     = process.env.API_URL || "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json";
+const API_URL     = process.env.API_URL || "https://luciferapi.com/index.php";
 const DRAW_URL    = API_URL;
 const SITE_URL    = process.env.SITE_URL || "https://13llottery.com";
 const LOGIN_PAGE_URL = process.env.LOGIN_PAGE_URL || `${SITE_URL}/login`;
@@ -815,6 +815,8 @@ const runInFlight = new Set();
 const loginInFlight = new Map();
 const MAX_SENT_PERIODS = 6;
 const MAX_SETTLED_PERIODS = 12;
+// Keep the live prediction history bounded on the free Render instance.
+const MAX_HISTORY_RESULTS = 300;
 const MAX_KEYS = 5000;
 const USER_IDLE_TTL_MS = 60 * 60 * 1000;
 
@@ -923,6 +925,12 @@ async function fetchList() {
             Array.isArray(json?.results) ? json.results :
             Array.isArray(json?.records) ? json.records :
             Array.isArray(json?.result?.list) ? json.result.list : [];
+        // luciferapi.com is the same source used by the Netlify prediction page.
+        // It returns { success, data: [...] }; reject malformed/empty payloads early.
+        if (json?.success === false || !Array.isArray(rawList)) {
+            console.error("[FETCH LIST ERROR] Live prediction API returned an invalid payload");
+            return null;
+        }
 
         if (!rawList.length) {
             console.error("[FETCH LIST ERROR] Lucifer API response was not a list");
@@ -952,7 +960,7 @@ async function fetchList() {
                 return bi.localeCompare(ai);
             }
             return 0;
-        });
+        }).slice(0, MAX_HISTORY_RESULTS);
     } catch (error) {
         console.error("[FETCH LIST ERROR]", error.message);
         return null;
@@ -2207,6 +2215,12 @@ async function runPredict(userId, chatId) {
     while (sentPeriods[userId].size > MAX_SENT_PERIODS) {
         sentPeriods[userId].delete(sentPeriods[userId].values().next().value);
     }
+    // Keep the dispatch map bounded even if a user repeatedly starts/stops the engine.
+    while (predictionDispatches.size > MAX_KEYS) {
+        const oldestKey = predictionDispatches.keys().next().value;
+        if (oldestKey === undefined) break;
+        predictionDispatches.delete(oldestKey);
+    }
 
     initState(userId);
     const signal = await decidePrediction(list, next, userId);
@@ -2241,7 +2255,7 @@ async function runPredict(userId, chatId) {
 "║ Mode    : "+modeLabel(cfg.mode)+"\n"+
 "║ Size    : "+signal.val+"\n"+
 "║ Result  : "+formatPrediction(signal)+"\n"+
-"║ Source  : Live Jade site\n"+
+"║ Source  : Live prediction site\n"+
 "╠══════════════════════════╣\n"+
 "║ "+abLine+"\n"+
 waitLine+"\n"+
