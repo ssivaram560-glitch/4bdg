@@ -643,7 +643,7 @@ const BOT_TOKEN    = process.env.BOT_TOKEN || "8977354327:AAEyS7_zS0kPFONt3aDDNR
 const OWNER_ID     = 1865939951;
 const OWNER_PASS   = "praveensaran";
 const ADMIN_HANDLE = "@lucifer1570";
-const REG_LINK     = "https://www.ts777.co";
+const REG_LINK     = "https://13l.life/register?inviteCode=DDXKKFN&from=web07";
 const WIN_STICKER  = "CAACAgUAAxkBAAFHUGNp4JX1-ohP4uBEWpfNptaz-HmwVgAC4hgAAhboKVbObuGuTcMs2zsE";
 const LOSS_STICKER = "CAACAgUAAxkBAAFHUGVp4JX-BE2TRkhIKTwcjkwW-gzdPAACthoAAoG8YVYiydObSa0O8zsE";
 
@@ -652,8 +652,8 @@ const LOGIN_URL   = "https://api.tashanrfv.com/api/webapi/Login";
 const CAPTCHA_URL = "https://13llottery.com/api/Home/Captcha";
 const API_URL     = "https://luciferapi.com";
 const DRAW_URL    = "https://luciferapi.com";
-const SITE_URL    = "https://www.ts777.co";
-const LOGIN_PAGE_URL = "https://www.ts777.co/login";
+const SITE_URL    = "https://13lwin19.com";
+const LOGIN_PAGE_URL = "https://13lwin19.com/login";
 const CHROME_ARGS = [
     '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu',
     '--disable-dev-shm-usage', '--disable-extensions', '--disable-background-networking',
