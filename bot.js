@@ -639,10 +639,10 @@ async function captchaLogin(userId, chatId, phone, password, bot, logBoth) {
 //  CONFIG
 // ============================================================
 // Keep secrets outside the source code.
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8977354327:AAEyS7_zS0kPFONt3aDDNRzvUWoWzO_tLGc";
-const OWNER_ID     = 1865939951;
-const OWNER_PASS   = "praveensaran";
-const ADMIN_HANDLE = "@lucifer1570";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8670635800:AAEeDoWmav3IL5Pj19shmaSfTHNuLjaT9Lw";
+const OWNER_ID     = 8869874751;
+const OWNER_PASS   = process.env.OWNER_PASS || "2004";
+const ADMIN_HANDLE = "@Sivakutty1";
 const REG_LINK     = "https://13l.life/register?inviteCode=DDXKKFN&from=web07";
 const WIN_STICKER  = "CAACAgUAAxkBAAFHUGNp4JX1-ohP4uBEWpfNptaz-HmwVgAC4hgAAhboKVbObuGuTcMs2zsE";
 const LOSS_STICKER = "CAACAgUAAxkBAAFHUGVp4JX-BE2TRkhIKTwcjkwW-gzdPAACthoAAoG8YVYiydObSa0O8zsE";
@@ -1832,32 +1832,44 @@ function getSide(n) {
     return Number(n) >= 5 ? 'BIG' : 'SMALL';
 }
 
+function sharedHtmlAnalysis(historyResults) {
+    if (!Array.isArray(historyResults) || !historyResults.length) return null;
+    if (historyResults.length < 5) return getSide(latestResultNumber(historyResults[0]));
+
+    let bigs = 0;
+    let smalls = 0;
+    for (let index = 0; index < Math.min(10, historyResults.length); index++) {
+        const number = latestResultNumber(historyResults[index]);
+        if (number === null) continue;
+        const weight = 10 - index;
+        if (number >= 5) bigs += weight;
+        else smalls += weight;
+    }
+
+    const last3 = historyResults.slice(0, 3).map(item => getSide(latestResultNumber(item)));
+    if (last3.length === 3 && last3[0] === last3[1] && last3[1] === last3[2]) {
+        return last3[0] === 'BIG' ? 'SMALL' : 'BIG';
+    }
+    return bigs >= smalls ? 'BIG' : 'SMALL';
+}
+
 function getPredictionSelection(lastResult, historyResults) {
     const n = Number(lastResult);
     if (!Number.isInteger(n) || n < 0 || n > 9 || !Array.isArray(historyResults) || historyResults.length < 2) return null;
 
-    const predictionSize = getSide(n);
-    const oppositeSize = predictionSize === 'BIG' ? 'SMALL' : 'BIG';
-    let selectedNumber = null;
-    let selectedIndex = -1;
-
-    for (let index = 1; index < historyResults.length; index++) {
-        const candidate = latestResultNumber(historyResults[index]);
-        if (candidate !== null && getSide(candidate) === oppositeSize) {
-            selectedNumber = candidate;
-            selectedIndex = index;
-            break;
-        }
-    }
-
-    if (selectedNumber === null) return null;
+    const analysisSize = sharedHtmlAnalysis(historyResults) || getSide(n);
+    const oppositePool = analysisSize === 'BIG' ? [0, 1, 2, 3, 4] : [5, 6, 7, 8, 9];
+    const latestIssue = String(historyResults[0]?.issueNumber ?? historyResults[0]?.issue ?? '');
+    const nextIssue = /^\d+$/.test(latestIssue) ? (BigInt(latestIssue) + 1n).toString() : latestIssue;
+    const periodSeed = Number(String(nextIssue).slice(-6)) || 0;
+    const selectedNumber = oppositePool[(periodSeed + n * 31) % oppositePool.length];
 
     return {
-        mapping: [predictionSize, selectedNumber],
-        mode: 'OPPOSITE_SIZE_MOST_RECENT',
+        // Analysis BIG -> SMALL number 0-4; analysis SMALL -> BIG number 5-9.
+        mapping: [analysisSize, selectedNumber],
+        mode: 'OPPOSITE_NUMBER_POOL',
         candidates: [selectedNumber],
-        matchedApiIndex: selectedIndex,
-        decisionReason: `Selected most-recent ${oppositeSize} number`
+        decisionReason: `Analysis ${analysisSize} -> opposite number pool ${oppositePool[0]}-${oppositePool[oppositePool.length - 1]}`
     };
 }
 
@@ -2003,36 +2015,6 @@ async function decidePrediction(list, currentPeriod, userId) {
 
     const latest = history.length ? latestResultNumber(history[0]) : null;
     if (latest === null) return { skip: true, reason: 'API returned no valid latest result' };
-
-    const consecutiveCheck = getConsecutivePairCheck(history);
-    if (consecutiveCheck.consecutive) {
-        const key = `${String(history[0]?.issueNumber ?? history[0]?.issue ?? '')}|${consecutiveCheck.pair}`;
-        if (key !== consecutiveSkipTriggerKey) {
-            consecutiveSkipTriggerKey = key;
-            consecutiveSkipRemaining = 2;
-        }
-
-        if (consecutiveSkipRemaining > 0) {
-            consecutiveSkipRemaining--;
-            return {
-                skip: true,
-                reason: `CONSECUTIVE SKIP ⏭️ — ${consecutiveCheck.pair} → ${consecutiveSkipRemaining} skip(s) remaining`,
-                consecutiveCheck,
-                consecutiveSkipRemaining
-            };
-        }
-    }
-
-    const skipCheck = shouldSkipByThreeMatches(latest, history);
-    const pairCheck = shouldSkipByPairMatch(history);
-    if (skipCheck.skip || pairCheck.skip) {
-        return {
-            skip: true,
-            reason: [skipCheck.skip ? `3-MATCH: ${skipCheck.reason}` : null, pairCheck.skip ? `PAIR: ${pairCheck.reason}` : null].filter(Boolean).join(' | '),
-            skipMatches: skipCheck.matches,
-            pairCheck
-        };
-    }
 
     const selected = getPredictionSelection(latest, history);
     if (!selected) return { skip: true, reason: 'API returned no valid opposite-size number' };
