@@ -1902,7 +1902,40 @@ function getVioletPatternPrediction(historyResults) {
         reason: `VIOLET + ${pattern}: latest 3 contain 0/5 and pattern is ${pattern}; predict opposite of latest ${latestSize} -> ${oppositeSize}.`
     };
 }
+function getSize(n) {
+    return [0, 5, 6, 7, 8, 9].includes(Number(n))
+        ? "BIG"
+        : "SMALL";
+}
 
+function predict(history) {
+    if (history.length < 3) return null;
+
+    const last1 = Number(history[history.length - 2]);
+    const last2 = Number(history[history.length - 1]);
+
+    const pair = String(last1) + String(last2);
+
+    // Search older history for the same pair
+    for (let i = 0; i < history.length - 2; i++) {
+        const a = Number(history[i]);
+        const b = Number(history[i + 1]);
+
+        const oldPair = String(a) + String(b);
+
+        if (oldPair === pair) {
+            const next = Number(history[i + 2]);
+
+            return {
+                pair: pair,
+                nextResult: next,
+                prediction: getSize(next)
+            };
+        }
+    }
+
+    return null;
+}
 function getPredictionSelection(lastResult, historyResults, forcedPredictionSize = null, forcedRule = null) {
     const n = Number(lastResult);
     if (!Number.isInteger(n) || n < 0 || n > 9 || !Array.isArray(historyResults) || historyResults.length < 2) return null;
