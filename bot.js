@@ -6,6 +6,7 @@ const puppeteer   = require('puppeteer');
 const fs          = require('fs');
 const path        = require('path');
 const { PNG }      = require('pngjs');
+const predictionLogic = require('./prediction logic.js');
 // ============================================================
 //  HELPER FUNCTIONS
 // ============================================================
@@ -639,22 +640,21 @@ async function captchaLogin(userId, chatId, phone, password, bot, logBoth) {
 //  CONFIG
 // ============================================================
 // Keep secrets outside the source code.
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8670635800:AAEeDoWmav3IL5Pj19shmaSfTHNuLjaT9Lw";
-const OWNER_ID     = 8869874751;
-const OWNER_PASS   = process.env.OWNER_PASS || "2004";
-const ADMIN_HANDLE = "@Sivakutty1";
-const REG_LINK     = "https://13l.life/register?inviteCode=DDXKKFN&from=web07";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8436419173:AAG-aWJIJShD5FFJAiPtf12rTcH1N2L4epM";
+const OWNER_ID     = 1865939951;
+const OWNER_PASS   = "praveensaran";
+const ADMIN_HANDLE = "@lucifer1570";
+const REG_LINK     = "https://www.ts777.co";
 const WIN_STICKER  = "CAACAgUAAxkBAAFHUGNp4JX1-ohP4uBEWpfNptaz-HmwVgAC4hgAAhboKVbObuGuTcMs2zsE";
 const LOSS_STICKER = "CAACAgUAAxkBAAFHUGVp4JX-BE2TRkhIKTwcjkwW-gzdPAACthoAAoG8YVYiydObSa0O8zsE";
 
 const BET_URL     = "https://api.ar-lottery01.com/api/Lottery/WinGoBet";
 const LOGIN_URL   = "https://api.tashanrfv.com/api/webapi/Login";
 const CAPTCHA_URL = "https://13llottery.com/api/Home/Captcha";
-const API_URL     = "https://luciferapi.com";
-// Lucifer API is the only source for latest results and full history.
-const DRAW_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json";
-const SITE_URL    = "https://13lwin19.com";
-const LOGIN_PAGE_URL = "https://13lwin19.com/login";
+const API_URL     = "https://luciferapi.com/index.php";
+const DRAW_URL    = "https://luciferapi.com/index.php";
+const SITE_URL    = "https://www.ts777.co";
+const LOGIN_PAGE_URL = "https://www.ts777.co/login";
 const CHROME_ARGS = [
     '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu',
     '--disable-dev-shm-usage', '--disable-extensions', '--disable-background-networking',
@@ -890,7 +890,7 @@ function scheduleRun(userId, chatId, delayMs) {
         if (running[userId]) {
             runPredict(userId, chatId).catch(error => {
                 console.error("[RUN PREDICT ERROR]", error?.message || error);
-                if (running[userId]) scheduleRun(userId, chatId, 10000);
+                if (running[userId]) scheduleRun(userId, chatId, API_RETRY_DELAY_MS);
             });
         }
     }, safeDelay);
@@ -898,9 +898,10 @@ function scheduleRun(userId, chatId, delayMs) {
     nextRunTimers.set(key, timer);
 }
 const MAX_LEVEL_HISTORY = 10;
-let consecutiveSkipRemaining = 0;
-let consecutiveSkipTriggerKey = null;
-
+const DRAW_REQUEST_TIMEOUT_MS = 5000;
+const RESULT_POLL_INTERVAL_MS = 2000;
+const NEXT_PREDICTION_DELAY_MS = 2000;
+const API_RETRY_DELAY_MS = 3000;
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -914,7 +915,7 @@ async function fetchList() {
                 "Referer": SITE_URL,
                 "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/139.0.0.0 Safari/537.36"
             },
-            timeout: 10000,
+            timeout: DRAW_REQUEST_TIMEOUT_MS,
             validateStatus: status => status >= 200 && status < 300
         });
         const json = response.data;
@@ -960,7 +961,7 @@ async function fetchList() {
 
     try {
         const fallbackResponse = await axios.get("https://gorgeous-maamoul-72bc10.netlify.app/", {
-            timeout: 15000,
+            timeout: DRAW_REQUEST_TIMEOUT_MS,
             headers: {
                 "Accept": "text/html,application/xhtml+xml",
                 "User-Agent": "Mozilla/5.0"
@@ -1081,7 +1082,7 @@ function initUser(id) {
     for (const field of ["total", "win", "loss", "lossStreak", "winStreak", "maxWinStreak", "maxLossStreak"]) {
         if (!Number.isFinite(Number(stats[id][field])) || stats[id][field] < 0) stats[id][field] = 0;
     }
-   if (!userStates[id])   userStates[id]   = { resultHistory:[], skipCount:0, currentMode:null, lastPrediction:null };
+    if (!userStates[id])   userStates[id]   = { resultHistory:[], currentMode:null, lastPrediction:null };
     if (!sentPeriods[id])  sentPeriods[id]  = new Set();
     if (!autobetCfg[id])   autobetCfg[id]   = { 
         watch:false, 
@@ -1448,20 +1449,31 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
     let token = normalizeToken(getToken(userId));
     if (!token || token.length < 20) {
         await send(chatId, "❌ Token இல்லை. முதலில் 🔐 Login press பண்ணு.");
-        return false;
+        return { ok: false, msg: "Token missing - press Login first" };
     }
 
     // Always re-read the repaired canonical token immediately before the request.
     token = getToken(String(userId));
     if (!token || token.length < 20) {
-        await send(chatId, '❌ Token missing before bet request.');
-        return false;
+        const message = "Token missing before bet request";
+        await send(chatId, '❌ ' + message + '.');
+        return { ok: false, msg: message };
     }
 
     const cfg        = autobetCfg[userId];
     const fallbackAmount = cfg.customBets[level-1] || (cfg.baseBet * MULT[level-1]);
     const betMult   = Number.isFinite(Number(amountOverride)) ? Number(amountOverride) : fallbackAmount;
     let bc = "";
+
+    const getBetErrorMessage = (value, fallback = "Bet request failed") => {
+        const data = value?.response?.data || value?.data || value || {};
+        const message = data?.msg ?? data?.message ?? data?.error ?? data?.detail ??
+            data?.data?.msg ?? data?.data?.message ?? data?.data?.error;
+        if (message !== undefined && message !== null && String(message).trim()) return String(message).trim();
+        if (value?.response?.status) return `HTTP ${value.response.status}`;
+        if (value?.message) return String(value.message);
+        return fallback;
+    };
 
     const maxRetries = 5; 
     const retryDelayMs = 2000; 
@@ -1551,12 +1563,14 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
                         continue;
                     }
                     token = oldToken;
-                    await send(chatId, "❌ Relogin completed but no new verified token was received.");
-                    return false;
+                    const message = "Relogin completed but no new verified token was received";
+                    await send(chatId, "❌ " + message + ".");
+                    return { ok: false, msg: message };
                 } else {
                     token = oldToken;
-                    await send(chatId, "❌ Auto-login failed. Existing token was kept.");
-                    return false;
+                    const message = "Auto-login failed. Existing token was kept";
+                    await send(chatId, "❌ " + message + ".");
+                    return { ok: false, msg: message };
                 }
             }
 
@@ -1571,8 +1585,9 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
             }
 
             // Other unhandled API errors
-            await send(chatId, "❌ Bet fail: " + (apiMessage || JSON.stringify(d).substr(0, 120)));
-            return false;
+            const message = apiMessage || getBetErrorMessage(d, JSON.stringify(d).slice(0, 180));
+            await send(chatId, "❌ Bet fail: " + message);
+            return { ok: false, msg: message };
 
         } catch (err) {
             console.error("[BET ERR]", err.message);
@@ -1590,12 +1605,14 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
                         continue; // Retry after verified relogin
                     }
                     token = oldToken;
-                    await send(chatId, "❌ Relogin completed but no new verified token was received.");
-                    return false;
+                    const message = "Relogin completed but no new verified token was received";
+                    await send(chatId, "❌ " + message + ".");
+                    return { ok: false, msg: message };
                 } else {
                     token = oldToken;
-                    await send(chatId, "❌ Auto-login failed. Existing token was kept.");
-                    return false;
+                    const message = "Auto-login failed. Existing token was kept";
+                    await send(chatId, "❌ " + message + ".");
+                    return { ok: false, msg: message };
                 }
             }
 
@@ -1606,13 +1623,15 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
                 continue;
             }
 
-            await send(chatId, "❌ Network error during bet: " + err.message);
-            return false;
+            const errorData = err.response?.data;
+            const errorMessage = errorData?.msg || errorData?.message || errorData?.error || err.message;
+            await send(chatId, "❌ Network/API error during bet: " + String(errorMessage).slice(0, 180));
+            return { ok: false, msg: String(errorMessage) };
         }
     }
 
     console.log("[BET FAIL] All retries exhausted.");
-    return false;
+    return { ok: false, msg: "Bet retries exhausted" };
 }
 // ============================================================
 // ============================================================
@@ -1622,6 +1641,7 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
 // COMPLETE BOT LOGIC WITH STRICT 4-CONSECUTIVE LOSS REQUIREMENT (NO WINS ALLOWED)
 // ============================================================
 let userStates = {};
+const BIG_DIGITS = new Set([0, 5, 6, 7, 8, 9]);
 
 function getNextIssue(list) {
     const latest = (Array.isArray(list) ? list : [])
@@ -1645,8 +1665,11 @@ function buildBSFromList(list, count = 15) {
 }
 
 function initState(userId) {
-    if (!userStates[userId]) userStates[userId] = { lastSitePrediction: null, resultHistory: [] };
+    if (!userStates[userId]) userStates[userId] = { lastSitePrediction: null, resultHistory: [], oppositeRecoveryMode: false, lastSelectionMode: null, currentPrediction: null };
     if (!Array.isArray(userStates[userId].resultHistory)) userStates[userId].resultHistory = [];
+    if (typeof userStates[userId].oppositeRecoveryMode !== 'boolean') userStates[userId].oppositeRecoveryMode = false;
+    if (!userStates[userId].lastSelectionMode) userStates[userId].lastSelectionMode = null;
+    if (!Object.prototype.hasOwnProperty.call(userStates[userId], 'currentPrediction')) userStates[userId].currentPrediction = null;
 }
 
 function modeLabel(mode) {
@@ -1818,7 +1841,7 @@ function updateCombinedAfterResult(userId, sizeWon, numberWon, betPlaced) {
 }
 
 function formatPrediction(signal) {
-    if (!signal || signal.skip === true) return "SKIP";
+    if (!signal) return "UNKNOWN";
     if (signal.type === "NUMBER") return String(Number(signal.val));
     if (signal.type === "SIZE") return String(signal.val || "").toUpperCase();
     if (signal.type === "COMBINED") {
@@ -1826,51 +1849,86 @@ function formatPrediction(signal) {
         const number = signal.number ?? signal.bets?.find(b => b.type === "NUMBER")?.val;
         return number === undefined ? size : `${size} OR ${Number(number)}`;
     }
-    return "SKIP";
+    return "UNKNOWN";
 }
 
 function getSide(n) {
     return Number(n) >= 5 ? 'BIG' : 'SMALL';
 }
 
-function sharedHtmlAnalysis(historyResults) {
-    if (!Array.isArray(historyResults) || !historyResults.length) return null;
-    if (historyResults.length < 5) return getSide(latestResultNumber(historyResults[0]));
-
-    let bigs = 0;
-    let smalls = 0;
-    for (let index = 0; index < Math.min(10, historyResults.length); index++) {
-        const number = latestResultNumber(historyResults[index]);
-        if (number === null) continue;
-        const weight = 10 - index;
-        if (number >= 5) bigs += weight;
-        else smalls += weight;
-    }
-
-    const last3 = historyResults.slice(0, 3).map(item => getSide(latestResultNumber(item)));
-    if (last3.length === 3 && last3[0] === last3[1] && last3[1] === last3[2]) {
-        return last3[0] === 'BIG' ? 'SMALL' : 'BIG';
-    }
-    return bigs >= smalls ? 'BIG' : 'SMALL';
+function getPredictionSize(n) {
+    return BIG_DIGITS.has(Number(n)) ? 'BIG' : 'SMALL';
 }
 
-function getPredictionSelection(lastResult, historyResults) {
+function getOppositeSide(size) {
+    return size === 'BIG' ? 'SMALL' : 'BIG';
+}
+
+/**
+ * SPECIAL 3-RESULT CONDITION
+ * Read the latest 3 results on every analysis cycle.
+ * Condition 1: at least one of the 3 numbers is a VIOLET number (0 or 5).
+ * Condition 2: the 3 sizes are exactly BSB or SBS.
+ * If both are true, predict the opposite size of the latest result.
+ */
+function getVioletPatternPrediction(historyResults) {
+    if (!Array.isArray(historyResults) || historyResults.length < 3) {
+        console.log(`[PREDICTION CHECK] Need 3 results; received ${Array.isArray(historyResults) ? historyResults.length : 0}`);
+        return null;
+    }
+
+    const latest3 = historyResults.slice(0, 3).map(item => latestResultNumber(item));
+    if (latest3.some(n => n === null)) {
+        console.log(`[PREDICTION CHECK] Invalid latest 3 results: ${latest3.join(', ')}`);
+        return null;
+    }
+
+    const violetFound = latest3.some(n => n === 0 || n === 5);
+    const pattern = latest3.map(n => getSide(n) === 'BIG' ? 'B' : 'S').join('');
+    const patternMatch = pattern === 'BSB' || pattern === 'SBS';
+
+    console.log(`[PREDICTION CHECK] R1=${latest3[0]} R2=${latest3[1]} R3=${latest3[2]} | VIOLET=${violetFound} | PATTERN=${pattern} | MATCH=${patternMatch}`);
+
+    if (!violetFound || !patternMatch) return null;
+
+    const latestSize = getSide(latest3[0]);
+    const oppositeSize = getOppositeSide(latestSize);
+
+    return {
+        predictionSize: oppositeSize,
+        pattern,
+        violetFound: true,
+        latestNumbers: latest3,
+        reason: `VIOLET + ${pattern}: latest 3 contain 0/5 and pattern is ${pattern}; predict opposite of latest ${latestSize} -> ${oppositeSize}.`
+    };
+}
+
+function getPredictionSelection(lastResult, historyResults, forcedPredictionSize = null, forcedRule = null) {
     const n = Number(lastResult);
     if (!Number.isInteger(n) || n < 0 || n > 9 || !Array.isArray(historyResults) || historyResults.length < 2) return null;
 
-    const analysisSize = sharedHtmlAnalysis(historyResults) || getSide(n);
-    const oppositePool = analysisSize === 'BIG' ? [0, 1, 2, 3, 4] : [5, 6, 7, 8, 9];
-    const latestIssue = String(historyResults[0]?.issueNumber ?? historyResults[0]?.issue ?? '');
-    const nextIssue = /^\d+$/.test(latestIssue) ? (BigInt(latestIssue) + 1n).toString() : latestIssue;
-    const periodSeed = Number(String(nextIssue).slice(-6)) || 0;
-    const selectedNumber = oppositePool[(periodSeed + n * 31) % oppositePool.length];
+    const predictionSize = forcedPredictionSize || getSide(n);
+    const oppositeSize = getOppositeSide(predictionSize);
+    let selectedNumber = null;
+    let selectedIndex = -1;
+
+    for (let index = 1; index < historyResults.length; index++) {
+        const candidate = latestResultNumber(historyResults[index]);
+        if (candidate !== null && getSide(candidate) === oppositeSize) {
+            selectedNumber = candidate;
+            selectedIndex = index;
+            break;
+        }
+    }
+
+    if (selectedNumber === null) return null;
 
     return {
-        // Analysis BIG -> SMALL number 0-4; analysis SMALL -> BIG number 5-9.
-        mapping: [analysisSize, selectedNumber],
-        mode: 'OPPOSITE_NUMBER_POOL',
+        mapping: [predictionSize, selectedNumber],
+        mode: 'OPPOSITE_SIZE_MOST_RECENT',
         candidates: [selectedNumber],
-        decisionReason: `Analysis ${analysisSize} -> opposite number pool ${oppositePool[0]}-${oppositePool[oppositePool.length - 1]}`
+        matchedApiIndex: selectedIndex,
+        decisionReason: forcedRule || `Selected most-recent ${oppositeSize} number`
     };
 }
 
@@ -1891,216 +1949,239 @@ function latestResultNumber(item) {
     return Number.isInteger(n) && n >= 0 && n <= 9 ? n : null;
 }
 
-// Big/Small-only formula-replay pattern engine.
-// For every older draw, replay the requested calculation and compare its
-// prediction with the actual next draw: N = match, R = mismatch.
-function formulaSizePrediction(currentPeriod, currentResult) {
-    const result = Number.parseInt(String(currentResult ?? ''), 10);
-    if (!Number.isInteger(result) || result === 0) return null;
-    try {
-        const nextLast3 = Number.parseInt(String(BigInt(String(currentPeriod)) + 1n).slice(-3), 10);
-        const answer = nextLast3 * Math.exp(result);
-        const answerStr = answer.toString();
-        const noDecimal = answerStr.replace('.', '');
-        const first14 = noDecimal.substring(0, 14);
-        const lastDigit = Number.parseInt(first14.charAt(first14.length - 1), 10);
-        if (!Number.isInteger(lastDigit)) return null;
-        return lastDigit <= 4 ? 'SMALL' : 'BIG';
-    } catch (error) {
+function majorityRule(history, n) {
+    const values = history.slice(-n);
+    if (!values.length) return null;
+    const counts = {};
+    for (const value of values) counts[value] = (counts[value] || 0) + 1;
+    const [winner] = Object.entries(counts).sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0] || [null];
+    return winner === null ? null : Number(winner);
+}
+
+function weightedMajorityRule(history, n) {
+    const values = history.slice(-n);
+    if (!values.length) return null;
+    const scores = {};
+    for (let index = 0; index < values.length; index++) {
+        const value = values[index];
+        scores[value] = (scores[value] || 0) + (index + 1);
+    }
+    const [winner] = Object.entries(scores).sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0] || [null];
+    return winner === null ? null : Number(winner);
+}
+
+class RulePatternEngine {
+    constructor() {
+        this.maps = {};
+        for (let length = 1; length <= 5; length++) {
+            this.maps[length] = new Map();
+        }
+    }
+
+    learn(history, actual) {
+        const maxLen = Math.min(5, history.length);
+        for (let length = 1; length <= maxLen; length++) {
+            const pattern = JSON.stringify(history.slice(-length));
+            const counter = this.maps[length].get(pattern) || new Map();
+            counter.set(String(actual), (counter.get(String(actual)) || 0) + 1);
+            this.maps[length].set(pattern, counter);
+        }
+    }
+
+    predict(history, allowed = null) {
+        const maxLen = Math.min(5, history.length);
+        for (let length = maxLen; length >= 1; length--) {
+            const pattern = JSON.stringify(history.slice(-length));
+            const counter = this.maps[length].get(pattern);
+            if (!counter || counter.size === 0) continue;
+            let filtered = counter;
+            if (Array.isArray(allowed) && allowed.length) {
+                filtered = new Map();
+                for (const [value, count] of counter.entries()) {
+                    if (allowed.includes(Number(value))) filtered.set(value, count);
+                }
+            }
+            if (!filtered || filtered.size === 0) continue;
+            const total = Array.from(filtered.values()).reduce((sum, count) => sum + count, 0);
+            if (total < 5) continue;
+            const [winner] = Array.from(filtered.entries()).sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0] || [null];
+            if (winner === null) continue;
+            return Number(winner);
+        }
         return null;
     }
 }
 
-const FORMULA_PATTERN_MIN_OCCURRENCES = 5;
-const FORMULA_PATTERN_MIN_CONFIDENCE = 0.60;
-const FORMULA_PATTERN_RECENT_WINDOW = 30;
+function getRuleSizeRules(history, engine) {
+    const rules = {};
+    const pattern = engine.predict(history);
+    if (pattern !== null) rules['PATTERN-1-5'] = pattern;
+    const fixedRules = {
+        SAME: history.length ? history[history.length - 1] : null,
+        OPPOSITE: history.length ? (1 - history[history.length - 1]) : null,
+        'MAJORITY-3': majorityRule(history, 3),
+        'MAJORITY-4': majorityRule(history, 4),
+        'MAJORITY-5': majorityRule(history, 5),
+        'MAJORITY-10': majorityRule(history, 10),
+        'MAJORITY-20': majorityRule(history, 20),
+        ALTERNATION: history.length >= 3 && history[history.length - 1] !== history[history.length - 2] && history[history.length - 2] !== history[history.length - 3] ? (1 - history[history.length - 1]) : null,
+        'STREAK-CONTINUE': history.length ? history[history.length - 1] : null,
+        'STREAK-REVERSE': (() => {
+            if (history.length < 2) return null;
+            const last = history[history.length - 1];
+            let streak = 1;
+            for (let i = history.length - 2; i >= 0; i--) {
+                if (history[i] === last) streak += 1; else break;
+            }
+            return streak >= 2 ? (1 - last) : null;
+        })(),
+        'WEIGHTED-10': weightedMajorityRule(history, 10),
+        'WEIGHTED-20': weightedMajorityRule(history, 20),
+        'FREQUENCY-20': majorityRule(history, 20),
+        'FREQUENCY-50': majorityRule(history, 50),
+        'FREQUENCY-100': majorityRule(history, 100)
+    };
 
-function validateFormulaMode(token, recentCalculations) {
-    const rows = Array.isArray(recentCalculations) ? recentCalculations : [];
-    if (!rows.length) return 0;
-    const wanted = token === 'R' ? 'R' : 'N';
-    return rows.filter(row => row.token === wanted).length / rows.length;
+    for (const [name, value] of Object.entries(fixedRules)) {
+        if (value !== null && value !== undefined) rules[name] = Number(value);
+    }
+
+    return rules;
 }
 
-function findValidatedPattern(pattern, calculations) {
-    if (!Array.isArray(pattern) || pattern.length < 1) return null;
-    const recent = (Array.isArray(calculations) ? calculations : []).slice(0, FORMULA_PATTERN_RECENT_WINDOW);
-    for (let length = pattern.length; length >= 1; length--) {
-        const suffix = pattern.slice(0, length).join('');
-        const nextTokens = [];
-        for (let start = length; start < pattern.length; start++) {
-            if (pattern.slice(start, start + length).join('') === suffix && pattern[start - 1]) {
-                nextTokens.push(pattern[start - 1]);
+function getRuleNumberRules(previousRows, numberHistory, numberEngine, predictedSize) {
+    const allowed = predictedSize === 1 ? [0, 1, 2, 3, 4] : [5, 6, 7, 8, 9];
+    const rules = {};
+
+    function buildFrequency(rows, windowLimit = null) {
+        const recent = windowLimit === null ? rows : rows.slice(-windowLimit);
+        const counts = {};
+        for (const row of recent) {
+            const value = Number(row.number);
+            if (allowed.includes(value)) counts[value] = (counts[value] || 0) + 1;
+        }
+        if (!Object.keys(counts).length) return null;
+        const winner = Object.entries(counts).sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0][0];
+        return Number(winner);
+    }
+
+    const allFrequency = buildFrequency(previousRows);
+    if (allFrequency !== null) rules['FREQUENCY-ALL'] = allFrequency;
+
+    const freq20 = buildFrequency(previousRows, 20);
+    if (freq20 !== null) rules['FREQUENCY-20'] = freq20;
+
+    const freq50 = buildFrequency(previousRows, 50);
+    if (freq50 !== null) rules['FREQUENCY-50'] = freq50;
+
+    const freq100 = buildFrequency(previousRows, 100);
+    if (freq100 !== null) rules['FREQUENCY-100'] = freq100;
+
+    const weighted20 = (() => {
+        const recent = previousRows.slice(-20);
+        const scores = {};
+        for (let idx = 0; idx < recent.length; idx++) {
+            const value = Number(recent[idx].number);
+            if (allowed.includes(value)) {
+                scores[value] = (scores[value] || 0) + (idx + 1);
             }
         }
-        if (nextTokens.length < FORMULA_PATTERN_MIN_OCCURRENCES) continue;
-        const normalCount = nextTokens.filter(token => token === 'N').length;
-        const recoveryCount = nextTokens.length - normalCount;
-        const modeToken = recoveryCount > normalCount ? 'R' : 'N';
-        const confidence = Math.max(normalCount, recoveryCount) / nextTokens.length;
-        const recentConfidence = validateFormulaMode(modeToken, recent);
-        if (confidence < FORMULA_PATTERN_MIN_CONFIDENCE || recentConfidence < FORMULA_PATTERN_MIN_CONFIDENCE) continue;
-        return {
-            mode: modeToken === 'R' ? 'RECOVERY' : 'NORMAL',
-            matchedPattern: `${suffix}→${modeToken}`,
-            occurrences: nextTokens.length,
-            confidence,
-            recentConfidence
-        };
-    }
-    return null;
-}
+        if (!Object.keys(scores).length) return null;
+        const winner = Object.entries(scores).sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0][0];
+        return Number(winner);
+    })();
 
-function buildNormalRecoveryPattern(historyResults) {
-    const list = Array.isArray(historyResults) ? historyResults : [];
-    const pattern = [];
-    const calculations = [];
-    // API list is newest-first. Each index i is an old draw and i - 1 is its
-    // actual next draw, so every historical calculation can be verified.
-    for (let index = 1; index < list.length; index++) {
-        const oldItem = list[index];
-        const nextItem = list[index - 1];
-        const oldPeriod = String(oldItem?.issueNumber ?? oldItem?.issue ?? '');
-        const oldNumber = latestResultNumber(oldItem);
-        const actualNext = latestResultNumber(nextItem);
-        const calculated = formulaSizePrediction(oldPeriod, oldNumber);
-        if (!calculated || actualNext === null) continue;
-        const actualSize = getSide(actualNext);
-        const token = calculated === actualSize ? 'N' : 'R';
-        pattern.push(token);
-        calculations.push({ period: oldPeriod, result: oldNumber, calculated, actual: actualSize, token });
-    }
-    return { pattern, calculations };
-}
+    if (weighted20 !== null) rules['WEIGHTED-20'] = weighted20;
 
-function getPatternModeAndPrediction(historyResults) {
-    const list = Array.isArray(historyResults) ? historyResults : [];
-    const latestPeriod = String(list[0]?.issueNumber ?? list[0]?.issue ?? '');
-    const latestResult = latestResultNumber(list[0]);
-    const normalPrediction = formulaSizePrediction(latestPeriod, latestResult);
-    if (!normalPrediction) return null;
-
-    const { pattern, calculations } = buildNormalRecoveryPattern(list);
-    const evidence = findValidatedPattern(pattern, calculations);
-    if (!evidence) return null;
-    const mode = evidence.mode;
-    return {
-        mode,
-        prediction: mode === 'RECOVERY' ? (normalPrediction === 'BIG' ? 'SMALL' : 'BIG') : normalPrediction,
-        pattern: pattern.join(''),
-        matchedPattern: evidence.matchedPattern,
-        occurrences: evidence.occurrences,
-        confidence: evidence.confidence,
-        recentConfidence: evidence.recentConfidence,
-        calculations,
-        reason: `Validated formula pattern ${evidence.matchedPattern} -> ${mode} (${Math.round(evidence.confidence * 100)}% / recent ${Math.round(evidence.recentConfidence * 100)}%)`
-    };
-}
-
-function shouldSkipByThreeMatches(lastResult, historyResults) {
-    const target = Number(lastResult);
-    if (!Number.isInteger(target) || !Array.isArray(historyResults) || historyResults.length < 4) {
-        return { skip: false, matches: [], reason: 'Not enough API history for 3-match check' };
-    }
-
-    const matches = [];
-    for (let index = 1; index < historyResults.length; index++) {
-        const matchNumber = latestResultNumber(historyResults[index]);
-        const nextNumber = latestResultNumber(historyResults[index - 1]);
-        if (matchNumber !== target || nextNumber === null) continue;
-
-        matches.push({
-            matchIssue: String(historyResults[index]?.issueNumber ?? ''),
-            matchNumber,
-            nextIssue: String(historyResults[index - 1]?.issueNumber ?? ''),
-            nextNumber,
-            nextSize: getSide(nextNumber)
-        });
-
-        if (matches.length === 3) break;
-    }
-
-    if (matches.length < 3) {
-        return { skip: false, matches, reason: `Only ${matches.length} historical match(es) found; 3 required` };
-    }
-
-    const sizes = matches.map(match => match.nextSize);
-    const allBig = sizes.every(size => size === 'BIG');
-    const allSmall = sizes.every(size => size === 'SMALL');
-    return {
-        skip: allBig || allSmall,
-        matches,
-        reason: allBig
-            ? 'Latest 3 matches all have BIG as the next result'
-            : allSmall
-                ? 'Latest 3 matches all have SMALL as the next result'
-                : 'Latest 3 next-result sizes are mixed; prediction allowed'
-    };
-}
-
-// Exact live-site ordered-pair gate. historyResults is newest first:
-// [0] newest, [1] second newest, and earlier pairs are [i] -> [i - 1].
-function shouldSkipByPairMatch(historyResults) {
-    if (!Array.isArray(historyResults) || historyResults.length < 3) {
-        return { skip: true, pair: null, found: false, reason: 'Not enough API history for 2-result pair check' };
-    }
-
-    const latestA = latestResultNumber(historyResults[1]);
-    const latestB = latestResultNumber(historyResults[0]);
-    if (latestA === null || latestB === null) {
-        return { skip: true, pair: null, found: false, reason: 'Latest 2 results are not valid numbers' };
-    }
-
-    const pair = `${latestA}-${latestB}`;
-    const historicalLimit = Math.min(historyResults.length - 1, 201);
-    let found = false;
-    let foundAt = null;
-
-    for (let index = 2; index < historicalLimit; index++) {
-        const older = latestResultNumber(historyResults[index]);
-        const newer = latestResultNumber(historyResults[index - 1]);
-        if (older === latestA && newer === latestB) {
-            found = true;
-            foundAt = {
-                olderIssue: String(historyResults[index]?.issueNumber ?? ''),
-                newerIssue: String(historyResults[index - 1]?.issueNumber ?? '')
-            };
-            break;
+    const weighted50 = (() => {
+        const recent = previousRows.slice(-50);
+        const scores = {};
+        for (let idx = 0; idx < recent.length; idx++) {
+            const value = Number(recent[idx].number);
+            if (allowed.includes(value)) {
+                scores[value] = (scores[value] || 0) + (idx + 1);
+            }
         }
+        if (!Object.keys(scores).length) return null;
+        const winner = Object.entries(scores).sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0][0];
+        return Number(winner);
+    })();
+
+    if (weighted50 !== null) rules['WEIGHTED-50'] = weighted50;
+
+    const patternValue = numberEngine.predict(numberHistory, allowed);
+    if (patternValue !== null) rules['NUMBER-PATTERN'] = patternValue;
+
+    return rules;
+}
+
+function selectRulePrediction(rulePredictions, mode) {
+    const entries = Object.entries(rulePredictions || {});
+    if (!entries.length) return { prediction: null, selected: [], votes: {} };
+
+    const ranked = entries.map(([rule, prediction]) => ({ rule, prediction, score: 0 })).sort((a, b) => {
+        if (a.prediction !== b.prediction) return Number(b.prediction) - Number(a.prediction);
+        return a.rule.localeCompare(b.rule);
+    });
+
+    const selected = ranked.slice(0, mode === 'SIZE' ? 8 : 5);
+    const votes = {};
+    for (const item of selected) {
+        votes[item.prediction] = (votes[item.prediction] || 0) + 1;
     }
 
+    const final = Object.entries(votes).sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0];
     return {
-        skip: !found,
-        pair,
-        found,
-        foundAt,
-        searchedPairs: Math.max(0, historicalLimit - 2),
-        reason: found
-            ? `Pair ${pair} found in earlier 200 historical results; prediction allowed`
-            : `Pair ${pair} not found in earlier 200 historical results; prediction skipped`
+        prediction: final ? Number(final[0]) : null,
+        selected,
+        votes
     };
 }
 
-function getConsecutivePairCheck(historyResults) {
-    if (!Array.isArray(historyResults) || historyResults.length < 2) {
-        return { consecutive: false, pair: null, reason: 'Not enough API history for consecutive pair check' };
+function buildRuleBasedPrediction(historyResults) {
+    if (!Array.isArray(historyResults) || historyResults.length < 10) return null;
+
+    const cleanNumbers = historyResults.map(item => latestResultNumber(item)).filter(value => value !== null);
+    if (cleanNumbers.length < 10) return null;
+
+    const sizeHistory = [];
+    const numberHistory = [];
+    const sizeEngine = new RulePatternEngine();
+    const numberEngine = new RulePatternEngine();
+
+    for (const number of cleanNumbers) {
+        const actualSize = number >= 5 ? 1 : 0;
+        sizeEngine.learn(sizeHistory, actualSize);
+        numberEngine.learn(numberHistory, number);
+        sizeHistory.push(actualSize);
+        numberHistory.push(number);
+        if (sizeHistory.length > 5) sizeHistory.shift();
+        if (numberHistory.length > 5) numberHistory.shift();
     }
 
-    const a = latestResultNumber(historyResults[1]);
-    const b = latestResultNumber(historyResults[0]);
-    if (a === null || b === null) {
-        return { consecutive: false, pair: null, reason: 'Latest 2 results are not valid numbers' };
-    }
+    const sizePredictions = getRuleSizeRules(sizeHistory, sizeEngine);
+    const sizeSelection = selectRulePrediction(sizePredictions, 'SIZE');
+    if (sizeSelection.prediction === null) return null;
 
-    const pair = `${a}-${b}`;
-    const consecutive = Number.isInteger(a) && Number.isInteger(b) && a >= 0 && a <= 9 && b >= 0 && b <= 9 && Math.abs(a - b) === 1;
+    const predictedSize = sizeSelection.prediction;
+    const allowed = predictedSize === 1 ? [0, 1, 2, 3, 4] : [5, 6, 7, 8, 9];
+    const previousRows = historyResults.map(item => ({ number: latestResultNumber(item) })).filter(item => item.number !== null);
+    const numberRules = getRuleNumberRules(previousRows, numberHistory, numberEngine, predictedSize);
+    const numberSelection = selectRulePrediction(numberRules, 'NUMBER');
+    let predictedNumber = numberSelection.prediction;
+    if (predictedNumber === null || !allowed.includes(predictedNumber)) {
+        predictedNumber = allowed[0];
+    }
 
     return {
-        consecutive,
-        pair,
-        reason: consecutive
-            ? `Consecutive pair ${pair} detected`
-            : `Pair ${pair} is not consecutive`
+        size: predictedSize,
+        number: predictedNumber,
+        allowed,
+        confidence: Math.max(10, Math.min(95, ((numberSelection.votes[predictedNumber] || 1) / Math.max(1, Object.keys(numberSelection.votes).length || 1)) * 100)),
+        sizeRules: sizeSelection.selected,
+        numberRules: numberSelection.selected,
+        source: 'RULE-BASED ANALYZER',
+        decisionReason: `Rule-based engine selected ${predictedSize === 1 ? 'BIG' : 'SMALL'} with number ${predictedNumber}.`
     };
 }
 
@@ -2108,66 +2189,314 @@ function cfgForPredictionMode(userId) {
     return String(autobetCfg[userId]?.mode || 'SIZE').toUpperCase();
 }
 
-async function decidePrediction(list, currentPeriod, userId) {
-    initState(userId);
-    const history = Array.isArray(list) ? list.slice().sort((a, b) => {
+function majorityRule(history, n) {
+    const values = history.slice(-n);
+    if (!values.length) return null;
+    const counts = {};
+    for (const value of values) counts[value] = (counts[value] || 0) + 1;
+    const winner = Object.entries(counts).sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0];
+    return winner ? Number(winner[0]) : null;
+}
+
+function weightedMajorityRule(history, n) {
+    const values = history.slice(-n);
+    if (!values.length) return null;
+    const scores = {};
+    for (let index = 0; index < values.length; index++) {
+        const value = values[index];
+        scores[value] = (scores[value] || 0) + (index + 1);
+    }
+    const winner = Object.entries(scores).sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0];
+    return winner ? Number(winner[0]) : null;
+}
+
+class PatternEngine {
+    constructor() {
+        this.maps = {};
+        for (let n = 1; n <= 5; n++) this.maps[n] = new Map();
+    }
+
+    learn(history, actual) {
+        const maxLen = Math.min(5, history.length);
+        for (let length = 1; length <= maxLen; length++) {
+            const pattern = JSON.stringify(history.slice(-length));
+            const counter = this.maps[length].get(pattern) || new Map();
+            counter.set(String(actual), (counter.get(String(actual)) || 0) + 1);
+            this.maps[length].set(pattern, counter);
+        }
+    }
+
+    predict(history, allowed = null) {
+        const maxLen = Math.min(5, history.length);
+        for (let length = maxLen; length >= 1; length--) {
+            const pattern = JSON.stringify(history.slice(-length));
+            const counter = this.maps[length].get(pattern);
+            if (!counter || counter.size === 0) continue;
+
+            let filtered = counter;
+            if (Array.isArray(allowed) && allowed.length) {
+                filtered = new Map();
+                for (const [value, count] of counter.entries()) {
+                    if (allowed.includes(Number(value))) filtered.set(value, count);
+                }
+            }
+
+            if (!filtered || filtered.size === 0) continue;
+            const total = Array.from(filtered.values()).reduce((sum, count) => sum + count, 0);
+            if (total < 5) continue;
+
+            const winner = Array.from(filtered.entries()).sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0];
+            if (!winner) continue;
+            return Number(winner[0]);
+        }
+        return null;
+    }
+}
+
+function getSizeValue(number) {
+    return Number(number) >= 5 ? 1 : 0;
+}
+
+function oppositeNumbers(sizePrediction) {
+    return sizePrediction === 1 ? [0, 1, 2, 3, 4] : [5, 6, 7, 8, 9];
+}
+
+function getRuleSizeRules(history, engine) {
+    const rules = {};
+    const pattern = engine.predict(history);
+    if (pattern !== null) rules['PATTERN-1-5'] = pattern;
+
+    const fixedRules = {
+        SAME: history.length ? history[history.length - 1] : null,
+        OPPOSITE: history.length ? 1 - history[history.length - 1] : null,
+        'MAJORITY-3': majorityRule(history, 3),
+        'MAJORITY-4': majorityRule(history, 4),
+        'MAJORITY-5': majorityRule(history, 5),
+        'MAJORITY-10': majorityRule(history, 10),
+        'MAJORITY-20': majorityRule(history, 20),
+        ALTERNATION: history.length >= 3 && history[history.length - 1] !== history[history.length - 2] && history[history.length - 2] !== history[history.length - 3] ? 1 - history[history.length - 1] : null,
+        'STREAK-CONTINUE': history.length ? history[history.length - 1] : null,
+        'STREAK-REVERSE': (() => {
+            if (history.length < 2) return null;
+            const last = history[history.length - 1];
+            let streak = 1;
+            for (let i = history.length - 2; i >= 0; i--) {
+                if (history[i] === last) streak += 1; else break;
+            }
+            return streak >= 2 ? 1 - last : null;
+        })(),
+        'WEIGHTED-10': weightedMajorityRule(history, 10),
+        'WEIGHTED-20': weightedMajorityRule(history, 20),
+        'FREQUENCY-20': majorityRule(history, 20),
+        'FREQUENCY-50': majorityRule(history, 50),
+        'FREQUENCY-100': majorityRule(history, 100)
+    };
+
+    for (const [name, value] of Object.entries(fixedRules)) {
+        if (value !== null && value !== undefined) rules[name] = Number(value);
+    }
+
+    return rules;
+}
+
+function getRuleNumberRules(previousRows, numberHistory, numberEngine, predictedSize) {
+    const allowed = oppositeNumbers(predictedSize);
+    const rules = {};
+
+    function frequencyWindow(rows, windowLimit = null) {
+        const recent = windowLimit === null ? rows : rows.slice(-windowLimit);
+        const counts = {};
+        for (const row of recent) {
+            const value = Number(row.number);
+            if (allowed.includes(value)) counts[value] = (counts[value] || 0) + 1;
+        }
+        if (!Object.keys(counts).length) return null;
+        const winner = Object.entries(counts).sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0];
+        return winner ? Number(winner[0]) : null;
+    }
+
+    function weightedWindow(rows, windowLimit) {
+        const recent = rows.slice(-windowLimit);
+        const scores = {};
+        for (let index = 0; index < recent.length; index++) {
+            const value = Number(recent[index].number);
+            if (allowed.includes(value)) scores[value] = (scores[value] || 0) + (index + 1);
+        }
+        if (!Object.keys(scores).length) return null;
+        const winner = Object.entries(scores).sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0];
+        return winner ? Number(winner[0]) : null;
+    }
+
+    const allFrequency = frequencyWindow(previousRows);
+    if (allFrequency !== null) rules['FREQUENCY-ALL'] = allFrequency;
+
+    const freq20 = frequencyWindow(previousRows, 20);
+    if (freq20 !== null) rules['FREQUENCY-20'] = freq20;
+
+    const freq50 = frequencyWindow(previousRows, 50);
+    if (freq50 !== null) rules['FREQUENCY-50'] = freq50;
+
+    const freq100 = frequencyWindow(previousRows, 100);
+    if (freq100 !== null) rules['FREQUENCY-100'] = freq100;
+
+    const weighted20 = weightedWindow(previousRows, 20);
+    if (weighted20 !== null) rules['WEIGHTED-20'] = weighted20;
+
+    const weighted50 = weightedWindow(previousRows, 50);
+    if (weighted50 !== null) rules['WEIGHTED-50'] = weighted50;
+
+    const patternValue = numberEngine.predict(numberHistory, allowed);
+    if (patternValue !== null) rules['NUMBER-PATTERN'] = patternValue;
+
+    return rules;
+}
+
+function selectRulePrediction(rulePredictions, mode) {
+    const entries = Object.entries(rulePredictions || {});
+    if (!entries.length) return { prediction: null, selected: [], votes: {} };
+
+    const selected = entries
+        .map(([rule, prediction]) => ({ rule, prediction: Number(prediction) }))
+        .sort((a, b) => b.prediction - a.prediction || a.rule.localeCompare(b.rule))
+        .slice(0, mode === 'SIZE' ? 8 : 5);
+
+    const votes = {};
+    for (const item of selected) {
+        votes[item.prediction] = (votes[item.prediction] || 0) + 1;
+    }
+
+    const final = Object.entries(votes).sort((a, b) => b[1] - a[1] || Number(a[0]) - Number(b[0]))[0];
+    return {
+        prediction: final ? Number(final[0]) : null,
+        selected,
+        votes
+    };
+}
+
+function buildRuleBasedPrediction(historyResults) {
+    if (!Array.isArray(historyResults) || historyResults.length < 10) return null;
+
+    const orderedHistory = [...historyResults].sort((a, b) => {
         const ai = String(a?.issueNumber ?? a?.issue ?? '');
         const bi = String(b?.issueNumber ?? b?.issue ?? '');
         if (/^\d+$/.test(ai) && /^\d+$/.test(bi)) {
-            if (ai.length !== bi.length) return bi.length - ai.length;
-            return bi.localeCompare(ai);
+            if (ai.length !== bi.length) return ai.length - bi.length;
+            return ai.localeCompare(bi);
         }
         return 0;
-    }) : [];
+    });
 
-    const latest = history.length ? latestResultNumber(history[0]) : null;
-    if (latest === null) return { skip: true, reason: 'API returned no valid latest result' };
+    const cleanNumbers = orderedHistory
+        .map(item => latestResultNumber(item))
+        .filter(value => value !== null);
 
-    if (cfgForPredictionMode(userId) === 'SIZE') {
-        // Previous result 0: do not generate a Big/Small prediction.
-        if (latest === 0) return { skip: true, reason: 'Previous result is 0' };
-        const patternDecision = getPatternModeAndPrediction(history);
-        if (!patternDecision) return { skip: true, reason: 'API returned no valid Big/Small history' };
-        userStates[userId].lastPrediction = patternDecision.prediction;
-        userStates[userId].lastNumberPrediction = null;
-        userStates[userId].lastPredictionNumber = latest;
-        userStates[userId].lastSelectionMode = patternDecision.mode;
-        userStates[userId].lastNRPattern = patternDecision.pattern;
-        console.log(`[NR PATTERN] ${patternDecision.pattern} | ${patternDecision.reason} -> ${patternDecision.prediction}`);
-        return {
-            type: 'SIZE',
-            val: patternDecision.prediction,
-            conf: 90,
-            pat: patternDecision.mode,
-            mode: patternDecision.mode,
-            pattern: patternDecision.pattern,
-            matchedPattern: patternDecision.matchedPattern,
-            decisionReason: patternDecision.reason,
-            bets: [{ type: 'SIZE', val: patternDecision.prediction, kind: 'size' }]
-        };
+    if (cleanNumbers.length < 10) return null;
+
+    const sizeHistory = [];
+    const numberHistory = [];
+    const sizeEngine = new PatternEngine();
+    const numberEngine = new PatternEngine();
+
+    for (const number of cleanNumbers) {
+        const actualSize = getSizeValue(number);
+        sizeEngine.learn(sizeHistory, actualSize);
+        numberEngine.learn(numberHistory, number);
+        sizeHistory.push(actualSize);
+        numberHistory.push(number);
+        if (sizeHistory.length > 5) sizeHistory.shift();
+        if (numberHistory.length > 5) numberHistory.shift();
     }
 
-    const selected = getPredictionSelection(latest, history);
-    if (!selected) return { skip: true, reason: 'API returned no valid opposite-size number' };
+    const sizePredictions = getRuleSizeRules(sizeHistory, sizeEngine);
+    const sizeSelection = selectRulePrediction(sizePredictions, 'SIZE');
+    if (sizeSelection.prediction === null) return null;
 
-    const [size, number] = selected.mapping;
-    userStates[userId].lastPrediction = size;
-    userStates[userId].lastNumberPrediction = number;
-    userStates[userId].lastPredictionNumber = latest;
-    userStates[userId].lastSelectionMode = selected.mode;
-    console.log(`[SAME-NUMBER SWAP] last=${latest} mode=${selected.mode} -> ${size} ${number} | ${selected.decisionReason}`);
+    const predictedSize = sizeSelection.prediction;
+    const allowed = oppositeNumbers(predictedSize);
+    const previousRows = orderedHistory
+        .map(item => ({ number: latestResultNumber(item) }))
+        .filter(item => item.number !== null);
+
+    const numberRules = getRuleNumberRules(previousRows, numberHistory, numberEngine, predictedSize);
+    const numberSelection = selectRulePrediction(numberRules, 'NUMBER');
+    let predictedNumber = numberSelection.prediction;
+    if (predictedNumber === null || !allowed.includes(predictedNumber)) {
+        predictedNumber = allowed[0];
+    }
+
+    const confidenceBase = ((numberSelection.votes[predictedNumber] || 1) / Math.max(1, Object.keys(numberSelection.votes).length || 1));
+    const confidence = Math.max(10, Math.min(95, confidenceBase * 100));
+
+    const sizeLabel = predictedSize === 1 ? 'BIG' : 'SMALL';
+
+    return {
+        type: 'COMBINED',
+        val: sizeLabel,
+        number: predictedNumber,
+        pat: 'RULE-BASED ANALYZER',
+        mode: 'RULE_BASED',
+        confidence,
+        decisionReason: `Rule-based engine selected ${sizeLabel} with number ${predictedNumber}.`,
+        bets: [
+            { type: 'SIZE', val: sizeLabel, kind: 'size' },
+            { type: 'NUMBER', val: predictedNumber, kind: 'number' }
+        ]
+    };
+}
+
+async function fetchPredictionFromLogicFile(history) {
+    if (!predictionLogic || typeof predictionLogic.predict !== 'function') {
+        throw new Error('prediction logic.js is not available');
+    }
+
+    const chronologicalHistory = (Array.isArray(history) ? history : [])
+        .slice()
+        .reverse()
+        .map(item => latestResultNumber(item))
+        .filter(number => number !== null);
+    const analysis = predictionLogic.predict(chronologicalHistory);
+    if (!analysis || analysis.prediction === null || analysis.nextDigit === null) return null;
+
+    const number = analysis.nextDigit;
+    const size = analysis.prediction;
     return {
         type: 'COMBINED',
         val: size,
         number,
-        pat: 'MATCHED SAME-LAST-RESULT HISTORY',
-        mode: selected.mode,
-        decisionReason: selected.decisionReason,
+        pair: analysis.pair,
+        firstNextDigit: analysis.nextDigit,
+        pat: 'LUCIFER API PAIR PREDICTOR',
+        mode: 'PAIR_NEXT_DIGIT',
+        confidence: 100,
+        decisionReason: `Pair ${analysis.pair} first matched historically; its next digit was ${number}.`,
         bets: [
             { type: 'SIZE', val: size, kind: 'size' },
             { type: 'NUMBER', val: number, kind: 'number' }
         ]
     };
+}
+
+async function decidePrediction(list, currentPeriod, userId) {
+    initState(userId);
+    const latest = Array.isArray(list) && list.length ? latestResultNumber(list[0]) : null;
+    if (latest === null) return null;
+
+    try {
+        const signal = await fetchPredictionFromLogicFile(list);
+        userStates[userId].lastPrediction = signal.val;
+        userStates[userId].lastNumberPrediction = signal.number;
+        userStates[userId].lastPredictionNumber = latest;
+        userStates[userId].lastPredictionPair = signal.pair;
+        userStates[userId].lastFirstNextDigit = signal.firstNextDigit;
+        userStates[userId].lastPredictionIssue = String(currentPeriod);
+        userStates[userId].currentPrediction = signal.val;
+        userStates[userId].lastSelectionMode = signal.mode;
+        console.log(`[PREDICTION LOGIC] last=${latest} -> ${signal.val} ${signal.number} | ${signal.decisionReason}`);
+        return signal;
+    } catch (error) {
+        console.error(`[PREDICTION LOGIC ERROR] ${error.message}`);
+        return null;
+    }
 }
 
 function recordLossStreakHit(userId) {
@@ -2183,6 +2512,7 @@ function recordLossStreakHit(userId) {
 
 function updateAfterResult(userId, wasWin, actual, betPlaced) {
     initUser(userId);
+    initState(userId);
     if (typeof autobetState !== 'undefined' && autobetState[userId]) {
         const st = autobetState[userId];
         const cfg = autobetCfg[userId] || {};
@@ -2216,6 +2546,12 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
                 recordLossStreakHit(userId);
             }
         }
+    }
+
+    if (userStates[userId].lastSelectionMode === 'RECOVERY_OPPOSITE_MODE') {
+        userStates[userId].oppositeRecoveryMode = wasWin;
+    } else {
+        userStates[userId].oppositeRecoveryMode = false;
     }
 }
 
@@ -2351,8 +2687,7 @@ async function runPredict(userId, chatId) {
     const list = await fetchList();
     if (!Array.isArray(list) || list.length === 0) {
         console.warn("[PREDICTION] Draw history unavailable; retrying without emitting a false prediction");
-        await send(chatId, "⏭️ SKIP\nReason: Live result history is temporarily unavailable.\nNo bet placed.");
-        scheduleRun(userId, chatId, 15000);
+        scheduleRun(userId, chatId, API_RETRY_DELAY_MS);
         runInFlight.delete(runKey);
         return;
     }
@@ -2360,14 +2695,13 @@ async function runPredict(userId, chatId) {
     // The latest draw result is the only input to the fixed local mapping.
     const next = getNextIssue(list);
     if (!next) {
-        await send(chatId, "⏭️ SKIP\nReason: Next period is not available yet.");
-        scheduleRun(userId, chatId, 10000);
+        scheduleRun(userId, chatId, NEXT_PREDICTION_DELAY_MS);
         runInFlight.delete(runKey);
         return;
     }
     const dispatched = predictionDispatches.get(runKey) || new Set();
     if (sentPeriods[userId].has(next) || dispatched.has(String(next))) {
-        scheduleRun(userId, chatId, 10000);
+        scheduleRun(userId, chatId, NEXT_PREDICTION_DELAY_MS);
         runInFlight.delete(runKey);
         return;
     }
@@ -2380,23 +2714,7 @@ async function runPredict(userId, chatId) {
 
     initState(userId);
     const signal = await decidePrediction(list, next, userId);
-    if (!signal) {
-        await send(chatId, "⏭️ SKIP\nReason: No valid prediction signal from the available history.");
-        scheduleRun(userId, chatId, 8000);
-        runInFlight.delete(runKey);
-        return;
-    }
-    if (signal.skip === true) {
-        console.log(`[PREDICTION] Skipping period ${next}: ${signal.reason || "skip result"}`);
-        await send(chatId,
-            "⏭️ SKIP\n"+
-            "Period: " + String(next).slice(-6) + "\n"+
-            "Reason: " + (signal.reason || "Pattern validation did not pass") +
-            "\nNo bet placed.");
-        scheduleRun(userId, chatId, 8000);
-        runInFlight.delete(runKey);
-        return;
-    }
+    if(!signal) { scheduleRun(userId, chatId, API_RETRY_DELAY_MS); runInFlight.delete(runKey); return; }
     let abLine = "🤖 AutoBet: OFF";
     let canBet = false;
 
@@ -2411,9 +2729,6 @@ async function runPredict(userId, chatId) {
     }
 
     const patternName = signal && signal.pat ? signal.pat : (state && state.mode ? state.mode : "NORMAL");
-    const patternLine = cfg.mode === "SIZE" && signal.pattern
-        ? "║ Pattern : " + signal.pattern + "\n║ Logic   : " + signal.decisionReason + "\n"
-        : "";
     const waitLine = "";
 
     await send(chatId,
@@ -2422,7 +2737,6 @@ async function runPredict(userId, chatId) {
 "╠══════════════════════════╣\n"+
 "║ Period  : "+next.slice(-6)+"\n"+
 "║ Mode    : BIG/SMALL\n"+
-patternLine+
 "║ Size    : "+signal.val+"\n"+
 "║ Result  : "+formatPrediction(signal)+"\n"+
 "║ Source  : Live Jade site\n"+
@@ -2514,23 +2828,23 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
         if (++tries > 25) {
             releaseResultCheck();
             await logBoth(chatId, "⏱ Timeout — checking next period...");
-            scheduleRun(userId, chatId, 15000);
+            scheduleRun(userId, chatId, API_RETRY_DELAY_MS);
             return;
         }
         const list = await fetchList();
         if (!list) {
             releaseResultCheck();
-            scheduleRun(userId, chatId, 10000);
+            scheduleRun(userId, chatId, API_RETRY_DELAY_MS);
             return;
         }
         if (!/^\d+$/.test(String(list[0]?.issueNumber || ""))) {
             releaseResultCheck();
-            scheduleRun(userId, chatId, 5000);
+            scheduleRun(userId, chatId, API_RETRY_DELAY_MS);
             return;
         }
         if (BigInt(list[0].issueNumber) < BigInt(target)) {
             callbackBusy = false;
-            iv = setTimeout(tick, 10000);
+            iv = setTimeout(tick, RESULT_POLL_INTERVAL_MS);
             resultCheckTimers.set(timerKey, iv);
             return;
         }
@@ -2538,12 +2852,12 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
 
         const res = list.find(i => String(i.issueNumber) === String(target));
         if (!res) {
-            scheduleRun(userId, chatId, 5000);
+            scheduleRun(userId, chatId, API_RETRY_DELAY_MS);
             return;
         }
         const num = parseInt(res.number || res.winNumber, 10);
         if (!Number.isFinite(num) || num < 0 || num > 9) {
-            scheduleRun(userId, chatId, 5000);
+            scheduleRun(userId, chatId, API_RETRY_DELAY_MS);
             return;
         }
 
@@ -2554,7 +2868,7 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
         settled.add(String(target));
         settledPeriods.set(timerKey, settled);
 
-        const actualSize = num >= 5 ? "BIG" : "SMALL";
+        const actualSize = getPredictionSize(num);
 
         const bets = Array.isArray(placedBets) ? placedBets : [];
         const betPlaced = bets.length > 0;
@@ -2629,24 +2943,30 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
 
         const predictionHistory = userStates[userId].resultHistory || [];
         predictionHistory.unshift({
+            issueNumber: String(target),
+            pair: userStates[userId].lastPredictionPair,
+            firstNextDigit: userStates[userId].lastFirstNextDigit,
+            predictedSize: userStates[userId].lastPrediction,
             latestResultNumber: userStates[userId].lastPredictionNumber,
+            actualNumber: num,
+            actualSize,
             status: win ? "WIN" : "LOSE",
             mappingMode: userStates[userId].lastSelectionMode
         });
         userStates[userId].resultHistory = predictionHistory.slice(0, 100);
 
-        scheduleRun(userId, chatId, 8000);
+        scheduleRun(userId, chatId, NEXT_PREDICTION_DELAY_MS);
         } catch (error) {
             const settled = settledPeriods.get(timerKey);
             settled?.delete(String(target));
             releaseResultCheck();
             console.error("[RESULT CHECK ERROR]", error?.message || error);
-            if (running[userId]) scheduleRun(userId, chatId, 10000);
+            if (running[userId]) scheduleRun(userId, chatId, API_RETRY_DELAY_MS);
         } finally {
             callbackBusy = false;
         }
     };
-    iv = setTimeout(tick, 10000);
+    iv = setTimeout(tick, RESULT_POLL_INTERVAL_MS);
     resultCheckTimers.set(timerKey, iv);
 }
 
