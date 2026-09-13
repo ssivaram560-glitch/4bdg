@@ -6,7 +6,6 @@ const puppeteer   = require('puppeteer');
 const fs          = require('fs');
 const path        = require('path');
 const { PNG }      = require('pngjs');
-const predictionLogic = require('./prediction logic.js');
 // ============================================================
 //  HELPER FUNCTIONS
 // ============================================================
@@ -1902,40 +1901,7 @@ function getVioletPatternPrediction(historyResults) {
         reason: `VIOLET + ${pattern}: latest 3 contain 0/5 and pattern is ${pattern}; predict opposite of latest ${latestSize} -> ${oppositeSize}.`
     };
 }
-function getSize(n) {
-    return [0, 5, 6, 7, 8, 9].includes(Number(n))
-        ? "BIG"
-        : "SMALL";
-}
 
-function predict(history) {
-    if (history.length < 3) return null;
-
-    const last1 = Number(history[history.length - 2]);
-    const last2 = Number(history[history.length - 1]);
-
-    const pair = String(last1) + String(last2);
-
-    // Search older history for the same pair
-    for (let i = 0; i < history.length - 2; i++) {
-        const a = Number(history[i]);
-        const b = Number(history[i + 1]);
-
-        const oldPair = String(a) + String(b);
-
-        if (oldPair === pair) {
-            const next = Number(history[i + 2]);
-
-            return {
-                pair: pair,
-                nextResult: next,
-                prediction: getSize(next)
-            };
-        }
-    }
-
-    return null;
-}
 function getPredictionSelection(lastResult, historyResults, forcedPredictionSize = null, forcedRule = null) {
     const n = Number(lastResult);
     if (!Number.isInteger(n) || n < 0 || n > 9 || !Array.isArray(historyResults) || historyResults.length < 2) return null;
@@ -1980,6 +1946,59 @@ function latestResultNumber(item) {
     const raw = item?.number ?? item?.result ?? item?.resultNumber ?? item?.num ?? item?.value ?? item?.winNumber;
     const n = Number.parseInt(String(raw ?? '').trim(), 10);
     return Number.isInteger(n) && n >= 0 && n <= 9 ? n : null;
+}
+
+// ============================================================
+//  PAIR-BASED PREDICTION
+// ============================================================
+// API history must be ordered newest -> oldest.
+function getPrediction(history) {
+    if (!Array.isArray(history) || history.length < 3) {
+        return {
+            prediction: "SKIP",
+            reason: "Not enough history"
+        };
+    }
+
+    // API is newest -> oldest
+    const latest1 = Number(history[0].number);
+    const latest2 = Number(history[1].number);
+
+    // Latest 2 results as pair
+    const pair = `${latest1}${latest2}`;
+
+    // Search oldest -> newest so "first match" is the first
+    // chronological occurrence in history.
+    const chronological = [...history].reverse();
+
+    for (let i = 0; i < chronological.length - 2; i++) {
+        const a = Number(chronological[i].number);
+        const b = Number(chronological[i + 1].number);
+
+        const foundPair = `${a}${b}`;
+
+        if (foundPair === pair) {
+            const nextNumber = Number(chronological[i + 2].number);
+
+            const prediction =
+                [0, 1, 2, 3, 4].includes(nextNumber)
+                    ? "SMALL"
+                    : "BIG";
+
+            return {
+                pair,
+                matchedAt: chronological[i].issueNumber,
+                nextNumber,
+                prediction
+            };
+        }
+    }
+
+    return {
+        pair,
+        prediction: "SKIP",
+        reason: "Pair not found"
+    };
 }
 
 function majorityRule(history, n) {
@@ -2478,30 +2497,22 @@ function buildRuleBasedPrediction(historyResults) {
 }
 
 async function fetchPredictionFromLogicFile(history) {
-    if (!predictionLogic || typeof predictionLogic.predict !== 'function') {
-        throw new Error('prediction logic.js is not available');
-    }
+    const analysis = getPrediction(history);
+    if (!analysis || analysis.prediction === "SKIP" || !Number.isInteger(analysis.nextNumber)) return null;
 
-    const chronologicalHistory = (Array.isArray(history) ? history : [])
-        .slice()
-        .reverse()
-        .map(item => latestResultNumber(item))
-        .filter(number => number !== null);
-    const analysis = predictionLogic.predict(chronologicalHistory);
-    if (!analysis || analysis.prediction === null || analysis.nextDigit === null) return null;
-
-    const number = analysis.nextDigit;
+    const number = analysis.nextNumber;
     const size = analysis.prediction;
     return {
         type: 'COMBINED',
         val: size,
         number,
         pair: analysis.pair,
-        firstNextDigit: analysis.nextDigit,
-        pat: 'LUCIFER API PAIR PREDICTOR',
+        matchedAt: analysis.matchedAt,
+        firstNextDigit: analysis.nextNumber,
+        pat: 'PAIR NEXT-NUMBER PREDICTOR',
         mode: 'PAIR_NEXT_DIGIT',
         confidence: 100,
-        decisionReason: `Pair ${analysis.pair} first matched historically; its next digit was ${number}.`,
+        decisionReason: `Pair ${analysis.pair} first matched historically at ${analysis.matchedAt}; its next number was ${number}.`,
         bets: [
             { type: 'SIZE', val: size, kind: 'size' },
             { type: 'NUMBER', val: number, kind: 'number' }
