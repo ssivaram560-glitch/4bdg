@@ -651,9 +651,8 @@ const BET_URL     = "https://api.ar-lottery01.com/api/Lottery/WinGoBet";
 const LOGIN_URL   = "https://api.tashanrfv.com/api/webapi/Login";
 const CAPTCHA_URL = "https://13llottery.com/api/Home/Captcha";
 const API_URL     = "https://luciferapi.com";
-// Same live source used by the Netlify prediction page. The bot polls this
-// JSON endpoint; it never refreshes the webpage and keeps only bounded state.
-const DRAW_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json";
+// Lucifer API is the only source for latest results and full history.
+const DRAW_URL    = "https://luciferapi.com";
 const SITE_URL    = "https://13lwin19.com";
 const LOGIN_PAGE_URL = "https://13lwin19.com/login";
 const CHROME_ARGS = [
