@@ -1839,6 +1839,88 @@ function updateCombinedAfterResult(userId, sizeWon, numberWon, betPlaced) {
     }
 }
 
+// ============================================================
+//  HTML-SHARED BIG/SMALL + NUMBER PREDICTION LOGIC
+//  This is the single source of truth for COMBINED mode.
+// ============================================================
+const combinedPredictionMap = {
+    9: ["BIG", 4],
+    8: ["SMALL", 6],
+    7: ["SMALL", 7],
+    6: ["SMALL", 8],
+    5: ["BIG", 3],
+    4: ["SMALL", 6],
+    3: ["SMALL", 9],
+    2: ["SMALL", 5],
+    1: ["BIG", 1],
+    0: ["BIG", 2]
+};
+
+const combinedAlternativeMap = {
+    9: ["SMALL", 5],
+    8: ["BIG", 3],
+    7: ["BIG", 1],
+    6: ["BIG", 2],
+    5: ["SMALL", 9],
+    4: ["BIG", 0],
+    3: ["BIG", 1],
+    2: ["BIG", 4],
+    1: ["SMALL", 8],
+    0: ["SMALL", 6]
+};
+
+function getCombinedSide(number) {
+    return Number(number) >= 6 ? "BIG" : "SMALL";
+}
+
+function getCombinedPredictionSelection(lastResult, resultHistory = []) {
+    const n = Number(lastResult);
+    if (!Number.isInteger(n) || n < 0 || n > 9) return null;
+
+    const sameDigit = (Array.isArray(resultHistory) ? resultHistory : []).filter(item => {
+        if (item?.latestResultNumber !== undefined && item?.latestResultNumber !== null) {
+            return Number(item.latestResultNumber) === n;
+        }
+        return Number(item?.lastResultNumber) === n;
+    });
+
+    // Match the HTML exactly: only a same-digit LOSE toggles the map.
+    const trigger = sameDigit.find(item => item.status === "LOSE");
+    const mode = trigger
+        ? (trigger.mappingMode === "ALTERNATIVE" ? "PRIMARY" : "ALTERNATIVE")
+        : "PRIMARY";
+    const mapping = mode === "ALTERNATIVE"
+        ? combinedAlternativeMap[n]
+        : combinedPredictionMap[n];
+
+    return {
+        mapping,
+        mode,
+        triggerStatus: trigger ? trigger.status : null
+    };
+}
+
+function getHtmlCombinedPrediction(lastResult, resultHistory = []) {
+    const selected = getCombinedPredictionSelection(lastResult, resultHistory);
+    if (!selected) return null;
+    const [size, number] = selected.mapping;
+    return {
+        type: "COMBINED",
+        val: size,
+        number,
+        mode: selected.mode,
+        mappingMode: selected.mode,
+        confidence: 100,
+        decisionReason: selected.triggerStatus
+            ? `Last result ${lastResult}; previous same-number LOSE -> ${selected.mode} mapping.`
+            : `Last result ${lastResult}; PRIMARY mapping.`,
+        bets: [
+            { type: "SIZE", val: size, kind: "size" },
+            { type: "NUMBER", val: number, kind: "number" }
+        ]
+    };
+}
+
 function formatPrediction(signal) {
     if (!signal) return "UNKNOWN";
     if (signal.type === "NUMBER") return String(Number(signal.val));
@@ -1846,7 +1928,7 @@ function formatPrediction(signal) {
     if (signal.type === "COMBINED") {
         const size = String(signal.val || "").toUpperCase();
         const number = signal.number ?? signal.bets?.find(b => b.type === "NUMBER")?.val;
-        return number === undefined ? size : `${size} OR ${Number(number)}`;
+        return number === undefined ? size : `${size},${Number(number)}`;
     }
     return "UNKNOWN";
 }
@@ -1856,7 +1938,7 @@ function getSide(n) {
 }
 
 function getPredictionSize(n) {
-    return BIG_DIGITS.has(Number(n)) ? 'BIG' : 'SMALL';
+    return getCombinedSide(n);
 }
 
 function getOppositeSide(size) {
@@ -2496,7 +2578,17 @@ function buildRuleBasedPrediction(historyResults) {
     };
 }
 
-async function fetchPredictionFromLogicFile(history) {
+async function fetchPredictionFromLogicFile(history, userId) {
+    // COMBINED mode now uses the exact HTML fixed-map logic.
+    if (cfgForPredictionMode(userId) === "COMBINED") {
+        const latest = Array.isArray(history) && history.length
+            ? latestResultNumber(history[0])
+            : null;
+        if (latest === null) return null;
+        return getHtmlCombinedPrediction(latest, userStates[userId]?.resultHistory || []);
+    }
+
+    // Keep the existing predictor for BIG/SMALL and NUMBER modes.
     const analysis = getPrediction(history);
     if (!analysis || analysis.prediction === "SKIP" || !Number.isInteger(analysis.nextNumber)) return null;
 
@@ -2526,7 +2618,7 @@ async function decidePrediction(list, currentPeriod, userId) {
     if (latest === null) return null;
 
     try {
-        const signal = await fetchPredictionFromLogicFile(list);
+        const signal = await fetchPredictionFromLogicFile(list, userId);
         userStates[userId].lastPrediction = signal.val;
         userStates[userId].lastNumberPrediction = signal.number;
         userStates[userId].lastPredictionNumber = latest;
