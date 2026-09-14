@@ -639,10 +639,10 @@ async function captchaLogin(userId, chatId, phone, password, bot, logBoth) {
 //  CONFIG
 // ============================================================
 // Keep secrets outside the source code.
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8687914335:AAFmAN__B884yE1K6a8WnitedGS-IYBAD08";
-const OWNER_ID     = 8869874751;
-const OWNER_PASS   = process.env.OWNER_PASS || "2004";
-const ADMIN_HANDLE = "@Sivakutty1";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8436419173:AAG-aWJIJShD5FFJAiPtf12rTcH1N2L4epM";
+const OWNER_ID     = 1865939951;
+const OWNER_PASS   = "praveensaran";
+const ADMIN_HANDLE = "@lucifer1570";
 const REG_LINK     = "https://www.ts777.co";
 const WIN_STICKER  = "CAACAgUAAxkBAAFHUGNp4JX1-ohP4uBEWpfNptaz-HmwVgAC4hgAAhboKVbObuGuTcMs2zsE";
 const LOSS_STICKER = "CAACAgUAAxkBAAFHUGVp4JX-BE2TRkhIKTwcjkwW-gzdPAACthoAAoG8YVYiydObSa0O8zsE";
@@ -1878,10 +1878,13 @@ function getCombinedPredictionSelection(lastResult, resultHistory = []) {
     if (!Number.isInteger(n) || n < 0 || n > 9) return null;
 
     const sameDigit = (Array.isArray(resultHistory) ? resultHistory : []).filter(item => {
-        if (item?.latestResultNumber !== undefined && item?.latestResultNumber !== null) {
+        // Ignore raw B/S strings; only HTML-compatible prediction records count.
+        if (!item || typeof item !== "object") return false;
+        if (item.latestResultNumber !== undefined && item.latestResultNumber !== null) {
             return Number(item.latestResultNumber) === n;
         }
-        return Number(item?.lastResultNumber) === n;
+        const fallback = item.lastResultNumber ?? item.actualNumber;
+        return fallback !== undefined && Number(fallback) === n;
     });
 
     // Match the HTML exactly: only a same-digit LOSE toggles the map.
@@ -3853,11 +3856,11 @@ if(text==="🔢 Set Watch Losses"){
             initState(id);
 
             if (prevList && prevList.length >= 4) {
-                // Build B/S history
-                userStates[id].resultHistory = buildBSFromList(prevList, 15);
-                await send(msg.chat.id, "📋 Loaded history: " + (userStates[id].resultHistory || []).join(''));
-
-
+                // Keep resultHistory reserved for HTML-compatible prediction records.
+                // Raw BIG/SMALL history must never overwrite LOSE/WIN mapping history.
+                const loadedBSHistory = buildBSFromList(prevList, 15);
+                userStates[id].loadedBSHistory = loadedBSHistory;
+                await send(msg.chat.id, "📋 Loaded history: " + loadedBSHistory.join(''));
             }
 
             const cfg=autobetCfg[id];
