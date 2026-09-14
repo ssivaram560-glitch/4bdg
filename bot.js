@@ -1452,7 +1452,7 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
                 amount:      1,
                 betContent:  bc,
                 betMultiple: betMult,
-                gameCode:    "WinGo_1M", 
+                gameCode:    "WinGo_30S", 
                 issueNumber: String(period),
                 language:    "en",
                 random:      Math.floor(Math.random() * 1e12)
@@ -2806,16 +2806,22 @@ async function runPredict(userId, chatId) {
         runInFlight.delete(runKey);
         return;
     }
+    // Do not mark the issue as dispatched until a valid signal exists.
+    // Otherwise one transient API/logic error permanently skips this period.
+    initState(userId);
+    const signal = await decidePrediction(list, next, userId);
+    if (!signal) {
+        scheduleRun(userId, chatId, API_RETRY_DELAY_MS);
+        runInFlight.delete(runKey);
+        return;
+    }
+
     sentPeriods[userId].add(next);
     dispatched.add(String(next));
     predictionDispatches.set(runKey, dispatched);
     while (sentPeriods[userId].size > MAX_SENT_PERIODS) {
         sentPeriods[userId].delete(sentPeriods[userId].values().next().value);
     }
-
-    initState(userId);
-    const signal = await decidePrediction(list, next, userId);
-    if(!signal) { scheduleRun(userId, chatId, API_RETRY_DELAY_MS); runInFlight.delete(runKey); return; }
     let abLine = "🤖 AutoBet: OFF";
     let canBet = false;
 
