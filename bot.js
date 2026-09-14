@@ -899,10 +899,10 @@ function scheduleRun(userId, chatId, delayMs) {
 }
 const MAX_LEVEL_HISTORY = 10;
 const DRAW_REQUEST_TIMEOUT_MS = 5000;
-// WinGo_30S: prediction and autobet are dispatched once per 30-second period.
-// Result polling stays short so settlement is not missed; it is not a new prediction cycle.
+// WinGo_30S: poll quickly, but dispatch prediction/autobet only once per new issue.
+// The draw period is 30 seconds; these short polls prevent boundary waiting and drift.
 const RESULT_POLL_INTERVAL_MS = 2000;
-const NEXT_PREDICTION_DELAY_MS = 30000;
+const NEXT_PREDICTION_DELAY_MS = 2000;
 const API_RETRY_DELAY_MS = 3000;
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
