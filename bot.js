@@ -650,8 +650,9 @@ const LOSS_STICKER = "CAACAgUAAxkBAAFHUGVp4JX-BE2TRkhIKTwcjkwW-gzdPAACthoAAoG8YV
 const BET_URL     = "https://api.ar-lottery01.com/api/Lottery/WinGoBet";
 const LOGIN_URL   = "https://api.tashanrfv.com/api/webapi/Login";
 const CAPTCHA_URL = "https://13llottery.com/api/Home/Captcha";
-const API_URL     = "https://luciferapi.com/index.php";
-const DRAW_URL    = "https://luciferapi.com/index.php";
+// Keep bot data source identical to the HTML WinGo 30S prediction page.
+const API_URL     = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json";
+const DRAW_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json";
 const SITE_URL    = "https://www.ts777.co";
 const LOGIN_PAGE_URL = "https://www.ts777.co/login";
 const CHROME_ARGS = [
@@ -898,8 +899,10 @@ function scheduleRun(userId, chatId, delayMs) {
 }
 const MAX_LEVEL_HISTORY = 10;
 const DRAW_REQUEST_TIMEOUT_MS = 5000;
+// WinGo_30S: prediction and autobet are dispatched once per 30-second period.
+// Result polling stays short so settlement is not missed; it is not a new prediction cycle.
 const RESULT_POLL_INTERVAL_MS = 2000;
-const NEXT_PREDICTION_DELAY_MS = 2000;
+const NEXT_PREDICTION_DELAY_MS = 30000;
 const API_RETRY_DELAY_MS = 3000;
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -958,49 +961,8 @@ async function fetchList() {
         console.error("[FETCH LIST ERROR]", error.message);
     }
 
-    try {
-        const fallbackResponse = await axios.get("https://gorgeous-maamoul-72bc10.netlify.app/", {
-            timeout: DRAW_REQUEST_TIMEOUT_MS,
-            headers: {
-                "Accept": "text/html,application/xhtml+xml",
-                "User-Agent": "Mozilla/5.0"
-            }
-        });
+    return null;
 
-        const html = String(fallbackResponse?.data || "");
-        const issueMatch = html.match(/Issue\s+(\d+)\s+·\s+Active prediction/i) || html.match(/Issue\s+(\d+)/i);
-        const lastResultMatch = html.match(/CURRENT LAST RESULT\s+(\d+)\s*\(([A-Z]+)\)/i);
-        const historyMatches = [...html.matchAll(/R\d+\s*[^\d]*(\d+)(?:\s*(?:SMALL|BIG))?/gi)];
-
-        const fallbackList = [];
-        if (issueMatch && lastResultMatch) {
-            fallbackList.push({
-                issueNumber: issueMatch[1],
-                number: lastResultMatch[1]
-            });
-        }
-
-        const history = historyMatches
-            .map(match => match[1])
-            .filter((value, index, arr) => value && arr.indexOf(value) === index)
-            .slice(0, 10)
-            .map((value, index) => ({
-                issueNumber: String(Date.now() + index),
-                number: value
-            }));
-
-        if (fallbackList.length) {
-            const merged = [...history, ...fallbackList].filter(item => /^[0-9]$/.test(String(item.number).replace(/\D/g, ""))).slice(0, 8);
-            if (merged.length) return merged.sort((a, b) => String(b.issueNumber).localeCompare(String(a.issueNumber)));
-        }
-
-        if (history.length) return history.slice(0, 8);
-        console.error("[FETCH LIST ERROR] Public prediction page fallback did not contain a valid latest result");
-        return null;
-    } catch (fallbackError) {
-        console.error("[FETCH LIST ERROR] Fallback source also failed:", fallbackError.message);
-        return null;
-    }
 }
 // Helper parser function
 async function parseBalanceResponse(r) {
