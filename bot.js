@@ -650,8 +650,17 @@ const LOSS_STICKER = "CAACAgUAAxkBAAFHUGVp4JX-BE2TRkhIKTwcjkwW-gzdPAACthoAAoG8YV
 const BET_URL     = "https://api.ar-lottery01.com/api/Lottery/WinGoBet";
 const LOGIN_URL   = "https://api.tashanrfv.com/api/webapi/Login";
 const CAPTCHA_URL = "https://13llottery.com/api/Home/Captcha";
-const API_URL     = "https://luciferapi.com/30sec.php";
-const DRAW_URL    = "https://luciferapi.com/30sec.php";
+const API_URL     = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json";
+const DRAW_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json";
+// Lucifer currently exposes the verified legacy history endpoint as 30sec.php;
+// no working 1min.php/1m.php endpoint was found, so it is used only as a
+// secondary historical cross-check, never as the primary 1M result source.
+const LUCIFER_OLD_1M_ANALYSIS_URLS = [
+    "https://luciferapi.com/1min.php",
+    "https://luciferapi.com/1m.php",
+    "https://luciferapi.com/60sec.php",
+    "https://luciferapi.com/30sec.php"
+];
 const COMBINED_PAGE_URL = "https://spiffy-entremet-e5ac9c.netlify.app/";
 // The Netlify page itself fetches this live JSON endpoint for every refresh.
 const COMBINED_SOURCE_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json";
@@ -1075,12 +1084,41 @@ function getCombinedSourcePrediction(list, userId) {
     };
 }
 
-async function fetchListForUser(userId) {
-    return String(autobetCfg[userId]?.mode || '').toUpperCase() === 'COMBINED'
-        ? await fetchCombinedSourceList()
-        : await fetchList();
+async function fetchLuciferOldHistoryForAnalysis() {
+    for (const url of LUCIFER_OLD_1M_ANALYSIS_URLS) {
+        try {
+            const response = await axios.get(url + "?_=" + Date.now(), {
+                headers: { "Accept": "application/json", "Cache-Control": "no-cache, no-store", "Pragma": "no-cache" },
+                timeout: 6000,
+                maxContentLength: 512 * 1024,
+                maxBodyLength: 512 * 1024,
+                validateStatus: status => status >= 200 && status < 300
+            });
+            const raw = Array.isArray(response.data?.data?.list) ? response.data.data.list
+                : Array.isArray(response.data?.data) ? response.data.data : [];
+            const normalized = raw.slice(0, 200).map((item, index) => ({
+                issueNumber: String(item?.issueNumber ?? item?.issue ?? index),
+                number: String(item?.number ?? item?.result ?? item?.winNumber ?? '').replace(/\D/g, '').slice(-1)
+            })).filter(item => /^\d+$/.test(item.issueNumber) && /^[0-9]$/.test(item.number));
+            if (normalized.length >= 5) {
+                console.log(`[LUCIFER HISTORY] ${url} -> ${normalized.length} records`);
+                return normalized;
+            }
+        } catch (error) {
+            console.warn(`[LUCIFER HISTORY] ${url} unavailable: ${error?.message || error}`);
+        }
+    }
+    return [];
 }
 
+async function fetchListForUser(userId) {
+    const mode = String(autobetCfg[userId]?.mode || '').toUpperCase();
+    if (mode === 'COMBINED') return await fetchCombinedSourceList();
+    // Primary current-period source is always the official 1-minute feed.
+    const primary = await fetchList();
+    if (primary) primary._oldAnalysis = await fetchLuciferOldHistoryForAnalysis();
+    return primary;
+}
 // Helper parser function
 async function parseBalanceResponse(r) {
     if (r.data && r.data.code === 0 && r.data.data && typeof r.data.data.balance !== 'undefined') {
@@ -1558,7 +1596,7 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
                 amount:      1,
                 betContent:  bc,
                 betMultiple: betMult,
-                gameCode:    "WinGo_30S", 
+                gameCode:    "WinGo_1M", 
                 issueNumber: String(period),
                 language:    "en",
                 random:      Math.floor(Math.random() * 1e12)
@@ -1724,7 +1762,7 @@ function buildBSFromList(list, count = 15) {
 }
 
 function initState(userId) {
-    if (!userStates[userId]) userStates[userId] = { lastSitePrediction: null, resultHistory: [], mode: 'NORMAL', pastedMode: false, combinedFlipNext: false, recoveryCount: 0, winBeforeLoss: 0, lossStreak: 0, history: [] };
+    if (!userStates[userId]) userStates[userId] = { lastSitePrediction: null, resultHistory: [], mode: 'NORMAL', pastedMode: false, nextPredictionMode: 'SIZE', combinedFlipNext: false, recoveryCount: 0, winBeforeLoss: 0, lossStreak: 0, history: [] };
     if (!Array.isArray(userStates[userId].resultHistory)) userStates[userId].resultHistory = [];
 }
 
@@ -1841,9 +1879,12 @@ function calculateSettlement(bets, actualSize, actualNumber) {
 
     for (const bet of normalized) {
         const amount = Math.max(0, Number(bet.amt) || 0);
+        const actualColor = getActualColorBase(actualNumber);
         const won = bet.type === "SIZE"
             ? String(bet.val).toUpperCase() === String(actualSize).toUpperCase()
-            : bet.type === "NUMBER" && Number(bet.val) === Number(actualNumber);
+            : bet.type === "COLOR"
+                ? String(bet.val).toUpperCase() === actualColor
+                : bet.type === "NUMBER" && Number(bet.val) === Number(actualNumber);
         if (!won) continue;
 
         if (bet.type === "SIZE") {
@@ -1852,6 +1893,9 @@ function calculateSettlement(bets, actualSize, actualNumber) {
         } else if (bet.type === "NUMBER") {
             payout += amount * NUMBER_WIN_MULTIPLIER;
             reasons.push("NUMBER");
+        } else if (bet.type === "COLOR") {
+            payout += amount * SIZE_WIN_MULTIPLIER;
+            reasons.push("COLOR");
         }
     }
 
@@ -1900,6 +1944,7 @@ function formatPrediction(signal) {
     if (!signal || signal.skip === true) return "SKIP";
     if (signal.type === "NUMBER") return String(Number(signal.val));
     if (signal.type === "SIZE") return String(signal.val || "").toUpperCase();
+    if (signal.type === "COLOR") return String(signal.val || "").toUpperCase();
     if (signal.type === "COMBINED") {
         const size = String(signal.val || "").toUpperCase();
         const number = signal.number ?? signal.bets?.find(b => b.type === "NUMBER")?.val;
@@ -2178,37 +2223,179 @@ function getBigSmallPatternPrediction(list) {
     };
 }
 
+function analyzeSameOppositeHistory(historyList, fallbackPattern) {
+    const sizes = (Array.isArray(historyList) ? historyList : []).slice(0, 200).map(item => {
+        const n = getResultNumber(item);
+        return n === null ? null : getSizeFromNumber(n);
+    }).filter(Boolean);
+
+    const windows = [20, 50, 100, 200];
+    const weights = [0.40, 0.30, 0.20, 0.10];
+    const reports = [];
+    let weightedSame = 0;
+    let weightedOpposite = 0;
+    let totalWeight = 0;
+
+    for (let w = 0; w < windows.length; w++) {
+        const count = Math.min(windows[w], sizes.length);
+        if (count < 2) continue;
+        let sameWins = 0;
+        let oppositeWins = 0;
+        for (let i = 0; i < count - 1; i++) {
+            const previous = sizes[i + 1];
+            const actual = sizes[i];
+            if (previous === actual) sameWins++;
+            else oppositeWins++;
+        }
+        const samples = count - 1;
+        const sameRate = sameWins / samples;
+        const oppositeRate = oppositeWins / samples;
+        const weight = weights[w];
+        weightedSame += sameRate * weight;
+        weightedOpposite += oppositeRate * weight;
+        totalWeight += weight;
+        reports.push({ window: windows[w], samples, sameWins, oppositeWins,
+            sameRate: Math.round(sameRate * 100), oppositeRate: Math.round(oppositeRate * 100),
+            winner: sameRate === oppositeRate ? 'TIE' : sameRate > oppositeRate ? 'SAME' : 'OPPOSITE' });
+    }
+
+    if (!totalWeight) {
+        return { mode: fallbackPattern?.last2Rule === 'OPPOSITE' ? 'OPPOSITE' : 'SAME',
+            action: 'WAIT', confidence: 50, samples: 0, reports: [],
+            reason: 'Not enough Lucifer history for a reliable mode analysis' };
+    }
+    weightedSame /= totalWeight;
+    weightedOpposite /= totalWeight;
+    const margin = Math.abs(weightedSame - weightedOpposite);
+    const sameVotes = reports.filter(r => r.winner === 'SAME').length;
+    const oppositeVotes = reports.filter(r => r.winner === 'OPPOSITE').length;
+    const mode = weightedSame > weightedOpposite ? 'SAME' : 'OPPOSITE';
+
+    // Require strict 90% empirical confidence and multi-window agreement.
+    // Otherwise the safest behavior is WAIT rather than forcing a bet.
+    const agreement = Math.max(sameVotes, oppositeVotes);
+    const confidence = Math.max(50, Math.min(95, Math.round((0.5 + margin) * 100)));
+    const clearEdge = confidence >= 90 && agreement >= 2;
+    const action = clearEdge ? 'BET' : 'WAIT';
+    const compact = reports.map(r => `${r.window}:${r.winner}`).join(' ');
+    return {
+        mode, action, confidence, samples: reports[reports.length - 1]?.samples || 0,
+        sameRate: Math.round(weightedSame * 100),
+        oppositeRate: Math.round(weightedOpposite * 100),
+        reports,
+        reason: `Weighted SAME ${Math.round(weightedSame * 100)}% vs OPPOSITE ${Math.round(weightedOpposite * 100)}% | Windows ${compact} | Agreement ${agreement}/4 | Action ${action}`
+    };
+}
+
+function calculateHistoryDigit(item) {
+    const period = String(item?.issueNumber ?? item?.issue ?? '');
+    const current = getResultNumber(item);
+    if (!/^\d+$/.test(period) || current === null || current === 0) return null;
+    try {
+        const nextPeriod = (BigInt(period) + 1n).toString();
+        const last3 = Number.parseInt(nextPeriod.slice(-3), 10);
+        const digits = String(last3 * Math.exp(current)).replace('.', '').substring(0, 14);
+        const digit = Number.parseInt(digits.charAt(digits.length - 1), 10);
+        return Number.isInteger(digit) ? digit : null;
+    } catch (_) { return null; }
+}
+
+function analyzeCalculationDigitHistory(historyList) {
+    const table = Array.from({ length: 10 }, () => ({
+        total: 0,
+        size: { BIG: 0, SMALL: 0 },
+        color: { RED: 0, GREEN: 0 },
+        observations: []
+    }));
+    const list = Array.isArray(historyList) ? historyList : [];
+    // Newest first: calculate each old record and compare it with the next
+    // actual period. This builds a digit-conditioned outcome pattern table.
+    for (let i = 1; i < list.length; i++) {
+        const digit = calculateHistoryDigit(list[i]);
+        const nextNumber = getResultNumber(list[i - 1]);
+        if (digit === null || nextNumber === null) continue;
+        const row = table[digit];
+        const size = nextNumber >= 5 ? 'BIG' : 'SMALL';
+        const color = nextNumber % 2 === 0 ? 'RED' : 'GREEN';
+        row.total++;
+        row.size[size]++;
+        row.color[color]++;
+        row.observations.unshift({ size, color, number: nextNumber });
+        if (row.observations.length > 200) row.observations.pop();
+    }
+    return table;
+}
+
+function weightedOutcomeRate(row, domain, value) {
+    const observations = Array.isArray(row?.observations) ? row.observations : [];
+    if (!observations.length) return 0;
+    const recent = observations.slice(0, 20);
+    const allWins = observations.filter(o => o[domain] === value).length;
+    const recentWins = recent.filter(o => o[domain] === value).length;
+    const allRate = allWins / observations.length;
+    const recentRate = recentWins / recent.length;
+    return 0.60 * recentRate + 0.40 * allRate;
+}
+
+function chooseHistoricalPrediction(digit, mode, table) {
+    const row = table?.[digit];
+    if (!row || row.total < 3) return null;
+    const domain = mode === 'RECOVERY' ? 'color' : 'size';
+    const values = domain === 'color' ? ['RED', 'GREEN'] : ['BIG', 'SMALL'];
+    const scores = values.map(value => ({
+        value,
+        score: weightedOutcomeRate(row, domain, value),
+        wins: row[domain][value],
+        total: row.total
+    })).sort((a, b) => b.score - a.score);
+    const selected = scores[0];
+    const second = scores[1];
+    const pattern = `${domain.toUpperCase()} ${values.map(v => `${v}:${row[domain][v]}`).join(' ')}`;
+    return {
+        value: selected.value,
+        wins: selected.wins,
+        total: selected.total,
+        rate: Math.round(selected.score * 100),
+        score: selected.score,
+        margin: Math.round((selected.score - second.score) * 100),
+        pattern
+    };
+}
+
+function calculatePastedModePrediction(list, state) {
+    if (!Array.isArray(list) || !list[0]) return null;
+    const currentPeriod = String(list[0].issueNumber ?? list[0].issue ?? '');
+    const currentResult = getResultNumber(list[0]);
+    if (!/^\d+$/.test(currentPeriod) || currentResult === null || currentResult === 0) return null;
+    const digit = calculateHistoryDigit(list[0]);
+    if (digit === null) return null;
+    const mode = state.mode === 'RECOVERY' ? 'RECOVERY' : 'NORMAL';
+    const historical = chooseHistoricalPrediction(digit, mode, state.calculationHistoryTable);
+    if (!historical) return null;
+    const nextPeriodNum = BigInt(currentPeriod) + 1n;
+    const nextLast3 = Number.parseInt(nextPeriodNum.toString().slice(-3), 10);
+    return {
+        type: mode === 'RECOVERY' ? 'COLOR' : 'SIZE',
+        val: historical.value,
+        conf: historical.rate,
+        pat: mode === 'RECOVERY' ? 'COLOUR' : 'SIZE',
+        mode: mode === 'RECOVERY' ? 'COLOUR' : 'SIZE',
+        pattern: `CALC-${digit}`,
+        lastDigit: digit,
+        decisionReason: `${nextLast3} × exp(${currentResult}) -> ${digit} | ${historical.pattern} | Selected ${historical.value} ${historical.wins}/${historical.total} (${historical.rate}%) | Margin ${historical.margin}%`,
+        bets: [{ type: mode === 'RECOVERY' ? 'COLOR' : 'SIZE', val: historical.value, kind: mode === 'RECOVERY' ? 'color' : 'size' }]
+    };
+}
+
 function decidePrediction(list, currentLevel, userId) {
     if (!Array.isArray(list) || list.length < 2) return null;
     initState(userId);
-
     const cfgMode = String(autobetCfg[userId]?.mode || 'SIZE').toUpperCase();
-    // Big/Small mode uses only the new last-5/last-4 pattern engine.
-    // Combined mode keeps its separate live Netlify-source engine below.
-    if (cfgMode === 'COMBINED') {
-        return { skip: true, reason: 'Combined mode uses its live source predictor' };
-    }
-
-    const result = getBigSmallPatternPrediction(list);
-    if (!result) return { skip: true, reason: 'Not enough valid results for last-5 pattern' };
-
+    if (cfgMode === 'COMBINED') return { skip: true, reason: 'Combined mode uses its live source predictor' };
     const state = userStates[userId];
-    state.mode = 'PATTERN-5/4';
-    state.pastedMode = false;
-    state.lastPrediction = result.prediction;
-    state.lastPattern = result.last4;
-    state.lastDecisionReason = result.reason;
-
-    return {
-        type: 'SIZE',
-        val: result.prediction,
-        conf: 90,
-        pat: 'PATTERN-5/4',
-        mode: 'PATTERN-5/4',
-        pattern: `${result.last2}/${result.last4}`,
-        decisionReason: result.reason,
-        bets: [{ type: 'SIZE', val: result.prediction, kind: 'size' }]
-    };
+    state.calculationHistoryTable = analyzeCalculationDigitHistory(list._oldAnalysis);
+    return calculatePastedModePrediction(list, state) ||
+        { skip: true, reason: 'Not enough old Lucifer calculation history for this digit' };
 }
 
 function recordLossStreakHit(userId) {
@@ -2223,24 +2410,6 @@ function recordLossStreakHit(userId) {
 }
 
 function getModeFromHistory(state) {
-    const history = Array.isArray(state.history) ? state.history : [];
-    const histStr = history.join(',');
-
-    // These are the pasted_content_2.txt history rules.
-    const recoveryPattern = histStr.endsWith('W,W,L') ||
-                            histStr.endsWith('W,W,W,L') ||
-                            /(L,L,L,L+)/.test(histStr);
-    const normalPattern = histStr.endsWith('W,L') ||
-                          /(W,W,W,W+),L$/.test(histStr);
-
-    // Before the first 3-loss trigger, mode is irrelevant because the bot uses
-    // the BB/SS/BS/SB same/opposite engine.
-    if (!state.pastedMode) return 'NORMAL';
-    if (recoveryPattern) return 'RECOVERY';
-    if (normalPattern) return 'NORMAL';
-
-    // A W at the end closes the previous loss sequence: W,L,L,W is NORMAL.
-    if (history[history.length - 1] === 'W') return 'NORMAL';
     return state.mode === 'RECOVERY' ? 'RECOVERY' : 'NORMAL';
 }
 
@@ -2248,59 +2417,32 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
     initUser(userId);
     initState(userId);
     const state = userStates[userId];
-
     if (!Array.isArray(state.history)) state.history = [];
-    if (!Number.isInteger(state.lossStreak)) state.lossStreak = 0;
-
     state.history.push(wasWin ? 'W' : 'L');
-    if (wasWin) state.lossStreak = 0;
-    else state.lossStreak++;
-
-    // Three losses only activate the pasted calculation engine. They do not
-    // directly decide NORMAL/RECOVERY; old W/L history decides that mode.
-    if (!state.pastedMode && state.lossStreak >= 3) {
-        state.pastedMode = true;
-        console.log('[PREDICTION-2] 3-loss trigger: pasted calculation engine ON');
-    }
-
-    const previousMode = state.mode || 'NORMAL';
-    state.mode = getModeFromHistory(state);
     if (state.history.length > 20) state.history.shift();
-    console.log(`[PREDICTION-2] history=${state.history.join(',')} | mode=${previousMode}->${state.mode} | pasted=${state.pastedMode}`);
 
-    // Existing AutoBet level/martingale bookkeeping remains unchanged.
-    if (typeof autobetState !== 'undefined' && autobetState[userId]) {
-        const st = autobetState[userId];
+    // W/L never changes SIZE/COLOUR mode. The selected mode remains active;
+    // only the calculation-digit historical pattern chooses the next value.
+    state.mode = state.mode === 'RECOVERY' ? 'RECOVERY' : 'NORMAL';
+    state.nextPredictionMode = state.mode === 'RECOVERY' ? 'COLOUR' : 'SIZE';
+    state.pastedMode = false;
+    state.lossStreak = wasWin ? 0 : (Number(state.lossStreak) || 0) + 1;
+    console.log(`[MODE] unchanged=${state.mode} after ${wasWin ? 'WIN' : 'LOSS'} | next=${state.nextPredictionMode} | history=${state.history.join(',')}`);
+
+    const st = autobetState[userId];
+    if (wasWin && st) {
+        st.level = 1; st.sizeLevel = 1; st.numberLevel = 1;
+        st.inMart = false; st.consecutiveLoss = 0;
+        st.lossStreakHitRecorded = false;
+    } else if (!wasWin && st && betPlaced) {
+        st.consecutiveLoss++;
         const cfg = autobetCfg[userId] || {};
-        if (betPlaced) {
-            if (wasWin) {
-                st.lastWinLevel = st.level;
-                st.lastWinMode = cfg.mode || 'SIZE';
-                st.level = 1;
-                st.sizeLevel = 1;
-                st.numberLevel = 1;
-                st.inMart = false;
-                st.consecutiveLoss = 0;
-                st.lossStreakHitRecorded = false;
-            } else {
-                st.consecutiveLoss++;
-                const maxLevel = Math.max(1, Number(cfg.maxLvl) || 1);
-                const currentLevel = Math.min(maxLevel, Math.max(1, Number(st.level) || 1));
-                st.level = currentLevel >= maxLevel ? 1 : currentLevel + 1;
-                st.sizeLevel = st.level;
-                st.numberLevel = st.level;
-                st.inMart = st.level > 1;
-                recordLossStreakHit(userId);
-            }
-        } else if (cfg.watch) {
-            if (wasWin) {
-                st.consecutiveLoss = 0;
-                st.lossStreakHitRecorded = false;
-            } else {
-                st.consecutiveLoss++;
-                recordLossStreakHit(userId);
-            }
-        }
+        const maxLevel = Math.max(1, Number(cfg.maxLvl) || 1);
+        const level = Math.min(maxLevel, Math.max(1, Number(st.level) || 1));
+        st.level = level >= maxLevel ? 1 : level + 1;
+        st.sizeLevel = st.level; st.numberLevel = st.level;
+        st.inMart = st.level > 1;
+        recordLossStreakHit(userId);
     }
 }
 
@@ -2398,6 +2540,21 @@ async function handleLoss(userId, chatId, actual, num, betLevel, bets = [], sett
 // ============================================================
 // PREDICT LOOP
 // ============================================================
+function getActualColorBase(number) {
+    const n = Number(number);
+    // WinGo color mapping from the supplied game screenshot:
+    // even numbers = RED, odd numbers = GREEN.
+    if (!Number.isInteger(n) || n < 0 || n > 9) return null;
+    return n % 2 === 0 ? 'RED' : 'GREEN';
+}
+
+function getActualColorLabel(number) {
+    const n = Number(number);
+    if (n === 0) return 'RED+VIOLET';
+    if (n === 5) return 'GREEN+VIOLET';
+    return n % 2 === 0 ? 'RED' : 'GREEN';
+}
+
 function parseItem(item) {
     const n = +(item.number || item.winNumber || 0);
     return {
@@ -2496,7 +2653,7 @@ async function runPredict(userId, chatId) {
 "║ Game    : BIG/SMALL\n"+
 "║ Mode    : "+String(signal.mode || signal.pat || "PATTERN-5/4")+"\n"+
 "║ Pattern : "+String(signal.pattern || "LAST-5/LAST-4")+"\n"+
-"║ Size    : "+signal.val+"\n"+
+"║ "+(signal.type === "COLOR" ? "Color   : " : "Size    : ")+signal.val+"\n"+
 "║ Result  : "+formatPrediction(signal)+"\n"+
 "║ Source  : Live Jade site\n"+
 "╠══════════════════════════╣\n"+
@@ -2511,12 +2668,13 @@ waitLine+"\n"+
         const rawSpecs = signal.bets || [{ type: signal.type, val: signal.val, kind: signal.type === "NUMBER" ? "number" : "size" }];
         // Enforce exactly one SIZE and one NUMBER for each period in COMBINED mode.
         const sizeSpec = rawSpecs.find(spec => spec.type === "SIZE");
+        const colorSpec = rawSpecs.find(spec => spec.type === "COLOR");
         const numberSpec = rawSpecs.find(spec => spec.type === "NUMBER");
         const specs = cfg.mode === "COMBINED"
             ? [sizeSpec, numberSpec].filter(Boolean)
             : cfg.mode === "NUMBER"
                 ? [numberSpec].filter(Boolean)
-                : [sizeSpec].filter(Boolean);
+                : [colorSpec || sizeSpec].filter(Boolean);
         const combinedAmounts = getCombinedBetAmounts(userId, st.sizeLevel, st.numberLevel);
         for (const spec of specs) {
             const isNumber = spec.type === "NUMBER";
@@ -2549,7 +2707,7 @@ waitLine+"\n"+
         ? rawPredictedBets.filter(spec => spec.type === "SIZE" || spec.type === "NUMBER")
         : cfg.mode === "NUMBER"
             ? rawPredictedBets.filter(spec => spec.type === "NUMBER")
-            : rawPredictedBets.filter(spec => spec.type === "SIZE");
+            : rawPredictedBets.filter(spec => spec.type === "SIZE" || spec.type === "COLOR");
     checkResult(userId, chatId, next, signal.val, signal.type, placedBets, predictedBets);
     runInFlight.delete(runKey);
 }
@@ -2628,6 +2786,8 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
         settledPeriods.set(timerKey, settled);
 
         const actualSize = num >= 5 ? "BIG" : "SMALL";
+        const actualColor = getActualColorBase(num);
+        const actualColorLabel = getActualColorLabel(num);
 
         const bets = Array.isArray(placedBets) ? placedBets : [];
         const betPlaced = bets.length > 0;
@@ -2636,6 +2796,7 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
         const evaluationBets = betPlaced ? bets : (Array.isArray(predictedBets) ? predictedBets : []);
         const sizeMatched = evaluationBets.some(b => b.type === "SIZE" && b.val === actualSize);
         const numberMatched = evaluationBets.some(b => b.type === "NUMBER" && Number(b.val) === num);
+        const colorMatched = evaluationBets.some(b => b.type === "COLOR" && String(b.val).toUpperCase() === actualColor);
         const isCombinedBet = evaluationBets.some(b => b.type === "SIZE") && evaluationBets.some(b => b.type === "NUMBER");
         // In COMBINED mode, a NUMBER win resets both size and number levels,
         // even if the size leg was not placed or did not match.
@@ -2643,6 +2804,7 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
         const settlement = betPlaced ? calculateSettlement(bets, actualSize, num) : null;
         const win = settlement ? settlement.won : evaluationBets.some(b => b.type === "NUMBER"
             ? Number(b.val) === num
+            : b.type === "COLOR" ? String(b.val).toUpperCase() === actualColor
             : b.type === "SIZE" && b.val === actualSize);
         // Exact flip rules from the new Netlify page. Apply only after LOSS.
         if (cfg.mode === "COMBINED") {
@@ -2680,6 +2842,20 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
                     sourceState.combinedFlipNext = samePair(currentNumber, previousNumber);
                 }
             }
+        }
+
+        if (!betPlaced) {
+            await send(chatId,
+                "╔══════════════════════════╗\n" +
+                `║  👀 WATCH RESULT: ${win ? 'WIN ✅' : 'LOSS ❌'}  ║\n` +
+                "╠══════════════════════════╣\n" +
+                `║ Number : ${num}\n` +
+                `║ Result : ${actualSize}\n` +
+                `║ Colour : ${actualColorLabel}\n` +
+                `║ Status : ${win ? 'Correct Prediction' : 'Incorrect Prediction'}\n` +
+                `║ Next   : ${userStates[userId]?.nextPredictionMode || (win ? userStates[userId]?.mode : 'RECOVERY')}\n` +
+                "╚══════════════════════════╝"
+            );
         }
 
         const betLevel = st.level;
