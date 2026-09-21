@@ -2154,7 +2154,7 @@ function calculatePastedRecoveryPrediction(list, currentResult) {
     if (!Number.isInteger(lastDigit)) return null;
 
     return {
-        prediction: lastDigit <= 4 ? 'SMALL' : 'BIG',
+        prediction: lastDigit >= 5 ? 'BIG' : 'SMALL',
         lastDigit,
         nextLast3Num,
         reason: `${nextLast3Num} × exp(${currentResult}) -> ${lastDigit}`
@@ -2298,7 +2298,7 @@ function calculatePastedModePrediction(list, state) {
         };
     }
 
-    const size = lastDigit <= 4 ? 'SMALL' : 'BIG';
+    const size = lastDigit >= 5 ? 'BIG' : 'SMALL';
     return {
         type: 'SIZE', val: size, conf: 90, pat: 'SIZE', mode: 'SIZE',
         pattern: `CALC-${lastDigit}`, lastDigit,
