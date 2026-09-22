@@ -1088,15 +1088,233 @@ async function fetchLuciferOldHistoryForAnalysis() {
             maxBodyLength: 512 * 1024,
             validateStatus: status => status >= 200 && status < 300
         });
-        const raw = Array.isArray(response.data?.data) ? response.data.data : [];
-        return raw.slice(0, 25).map((item, index) => ({
-            issueNumber: String(item?.issueNumber ?? index),
-            number: String(item?.number ?? '').replace(/\D/g, '').slice(-1)
+        const raw = Array.isArray(response.data)
+            ? response.data
+            : Array.isArray(response.data?.data)
+                ? response.data.data
+                : Array.isArray(response.data?.data?.list)
+                    ? response.data.data.list
+                    : [];
+        // Use the complete history returned by Lucifer; do not cap it at 200.
+        return raw.map((item, index) => ({
+            issueNumber: String(item?.issueNumber ?? item?.issue ?? item?.period ?? index),
+            number: String(
+                item?.number ?? item?.winNumber ?? item?.result ?? item?.resultNumber ?? ''
+            ).replace(/\D/g, '').slice(-1)
         })).filter(item => /^[0-9]$/.test(item.number));
     } catch (error) {
         console.error('[LUCIFER OLD HISTORY ERROR]', error?.message || error);
         return [];
     }
+}
+
+// History is newest-first. Each older record at index i is followed by the
+// newer record at index i - 1. Compare several historical rules and choose
+// the strongest measured next-size edge for the current period.
+function analyzeLuciferNextResult(historyList, currentResult, currentPeriod, state) {
+    const current = Number(currentResult);
+    if (!Number.isInteger(current) || current < 0 || current > 9) return null;
+
+    const history = (Array.isArray(historyList) ? historyList : [])
+        .map((item, index) => ({
+            number: getResultNumber(item),
+            issue: String(item?.issueNumber ?? item?.issue ?? item?.period ?? index)
+        }))
+        .filter(item => item.number !== null);
+
+    const periodText = String(currentPeriod ?? '');
+    const periodLast = periodText.replace(/\D/g, '').slice(-1);
+    const periodSecondLast = periodText.replace(/\D/g, '').slice(-2);
+
+    const rules = [
+        {
+            name: `RESULT-${current}`,
+            match: item => item.number === current
+        },
+        {
+            name: `PERIOD-LAST-${periodLast || '?'}`,
+            match: item => periodLast && item.issue.replace(/\D/g, '').slice(-1) === periodLast
+        },
+        {
+            name: `PERIOD-LAST2-${periodSecondLast || '?'}`,
+            match: periodSecondLast && item.issue.replace(/\D/g, '').slice(-2) === periodSecondLast
+        },
+        {
+            name: `RESULT-${current}+PERIOD-${periodLast || '?'}`,
+            match: item => item.number === current && periodLast &&
+                item.issue.replace(/\D/g, '').slice(-1) === periodLast
+        }
+    ].filter(rule => rule.name.indexOf('?') === -1);
+
+    const candidates = [];
+    for (const rule of rules) {
+        const sizeCounts = { BIG: 0, SMALL: 0 };
+        const numberCounts = Array(10).fill(0);
+        let samples = 0;
+
+        for (let index = 1; index < history.length; index++) {
+            if (!rule.match(history[index])) continue;
+            const following = history[index - 1]?.number;
+            if (following === null || following === undefined) continue;
+            numberCounts[following]++;
+            sizeCounts[getSizeFromNumber(following)]++;
+            samples++;
+        }
+
+        if (samples < 8) continue;
+        const rankedSizes = Object.entries(sizeCounts)
+            .map(([size, count]) => ({ size, count }))
+            .sort((a, b) => b.count - a.count);
+        const bestSize = rankedSizes[0];
+        const secondSize = rankedSizes[1];
+        if (!bestSize || !secondSize || bestSize.count < 2) continue;
+
+        const confidence = Math.round((bestSize.count / samples) * 100);
+        const edge = (bestSize.count - secondSize.count) / samples;
+        candidates.push({ rule, bestSize, confidence, edge, samples, numberCounts });
+    }
+
+    if (!candidates.length) return null;
+    candidates.sort((a, b) =>
+        b.confidence - a.confidence || b.edge - a.edge || b.samples - a.samples
+    );
+
+    const selected = candidates[0];
+    if (selected.confidence < 90 || selected.edge < 0.15) return null;
+
+    const representativeNumber = selected.numberCounts
+        .map((count, number) => ({ number, count }))
+        .filter(item => getSizeFromNumber(item.number) === selected.bestSize.size)
+        .sort((a, b) => b.count - a.count || a.number - b.number)[0]?.number ?? null;
+
+    const predictionSize = selected.bestSize.size;
+    const predictionColor = predictionSize === 'BIG' ? 'RED' : 'GREEN';
+    // Under the requested 0–4/5–9 mapping, colour and size describe the
+    // same event. Use SIZE as the deterministic tie-breaker for this period.
+    const mode = 'SIZE';
+
+    return {
+        type: mode === 'COLOUR' ? 'COLOR' : 'SIZE',
+        val: mode === 'COLOUR' ? predictionColor : predictionSize,
+        number: representativeNumber,
+        conf: selected.confidence,
+        historyBased: true,
+        pat: 'LUCIFER-PATTERN',
+        mode,
+        pattern: selected.rule.name,
+        decisionReason:
+            `${selected.rule.name}: ${predictionSize} ` +
+            `(${selected.bestSize.count}/${selected.samples}, ${selected.confidence}%) | ` +
+            `representative ${representativeNumber} | ${predictionColor}`,
+        bets: [{
+            type: mode === 'COLOUR' ? 'COLOR' : 'SIZE',
+            val: mode === 'COLOUR' ? predictionColor : predictionSize,
+            kind: mode === 'COLOUR' ? 'color' : 'size'
+        }]
+    };
+}
+
+function calculateHistoryDigit(issueNumber, resultNumber) {
+    const period = String(issueNumber ?? '');
+    const result = Number(resultNumber);
+    if (!/^\d+$/.test(period) || !Number.isInteger(result) || result < 0 || result > 9) return null;
+    let nextPeriod;
+    try {
+        nextPeriod = (BigInt(period) + 1n).toString();
+    } catch (_) {
+        return null;
+    }
+    const nextLast3 = Number.parseInt(nextPeriod.slice(-3), 10);
+    const answer = nextLast3 * Math.exp(result);
+    const digits = String(answer).replace('.', '').substring(0, 14);
+    const digit = Number.parseInt(digits.charAt(digits.length - 1), 10);
+    return Number.isInteger(digit) && digit >= 0 && digit <= 9 ? digit : null;
+}
+
+function getHistoricalColor(number) {
+    const n = Number(number);
+    if (!Number.isInteger(n) || n < 0 || n > 9) return null;
+    // Base colour used by the game: 0 is RED+VIOLET and 5 is GREEN+VIOLET.
+    return n % 2 === 0 ? 'RED' : 'GREEN';
+}
+
+function analyzeCalculatedResultMode(historyList, currentPeriod, currentResult) {
+    const currentDigit = calculateHistoryDigit(currentPeriod, currentResult);
+    if (currentDigit === null) return null;
+
+    const rows = (Array.isArray(historyList) ? historyList : [])
+        .map((item, index) => ({
+            issue: String(item?.issueNumber ?? item?.issue ?? item?.period ?? index),
+            result: getResultNumber(item)
+        }))
+        .filter(row => row.result !== null);
+
+    const stats = Array.from({ length: 10 }, () => ({
+        samples: 0,
+        size: { BIG: 0, SMALL: 0 },
+        color: { RED: 0, GREEN: 0 },
+        numbers: Array(10).fill(0)
+    }));
+
+    for (let index = 1; index < rows.length; index++) {
+        const calculatedDigit = calculateHistoryDigit(rows[index].issue, rows[index].result);
+        const actualNext = rows[index - 1].result;
+        if (calculatedDigit === null || actualNext === null) continue;
+
+        const bucket = stats[calculatedDigit];
+        bucket.samples++;
+        bucket.size[getSizeFromNumber(actualNext)]++;
+        bucket.color[getHistoricalColor(actualNext)]++;
+        bucket.numbers[actualNext]++;
+    }
+
+    const bucket = stats[currentDigit];
+    if (!bucket || bucket.samples < 8) return null;
+
+    const candidates = [
+        { type: 'SIZE', values: bucket.size },
+        { type: 'COLOR', values: bucket.color }
+    ].flatMap(candidate => Object.entries(candidate.values).map(([value, wins]) => ({
+        type: candidate.type,
+        value,
+        wins,
+        samples: bucket.samples,
+        confidence: Math.round((wins / bucket.samples) * 100),
+        losses: bucket.samples - wins
+    }))).sort((a, b) => b.confidence - a.confidence || b.wins - a.wins);
+
+    const best = candidates[0];
+    const alternate = candidates.find(item => item.type === best.type && item.value !== best.value);
+    if (!best || !alternate || best.confidence < 90 || best.confidence - alternate.confidence < 15) {
+        return null;
+    }
+
+    const representativeNumber = bucket.numbers
+        .map((count, number) => ({ number, count }))
+        .filter(item => best.type === 'SIZE'
+            ? getSizeFromNumber(item.number) === best.value
+            : getHistoricalColor(item.number) === best.value)
+        .sort((a, b) => b.count - a.count || a.number - b.number)[0]?.number ?? null;
+
+    return {
+        type: best.type,
+        val: best.value,
+        number: representativeNumber,
+        conf: best.confidence,
+        historyBased: true,
+        pat: 'CALC-RESULT-HISTORY',
+        mode: best.type === 'COLOR' ? 'COLOUR' : 'SIZE',
+        pattern: `CALC-${currentDigit}`,
+        decisionReason:
+            `Calculation result ${currentDigit}: ${best.type} ${best.value} ` +
+            `won ${best.wins}/${best.samples} (${best.confidence}%) | ` +
+            `representative ${representativeNumber}`,
+        bets: [{
+            type: best.type,
+            val: best.value,
+            kind: best.type === 'COLOR' ? 'color' : 'size'
+        }]
+    };
 }
 
 async function fetchListForUser(userId) {
@@ -2211,7 +2429,7 @@ function getBigSmallPatternPrediction(list) {
 }
 
 function analyzeSameOppositeHistory(historyList, fallbackPattern) {
-    const sizes = (Array.isArray(historyList) ? historyList : []).slice(0, 200).map(item => {
+    const sizes = (Array.isArray(historyList) ? historyList : []).map(item => {
         const n = getResultNumber(item);
         return n === null ? null : getSizeFromNumber(n);
     }).filter(Boolean);
@@ -2307,13 +2525,29 @@ function calculatePastedModePrediction(list, state) {
     };
 }
 
-function decidePrediction(list, currentLevel, userId) {
+async function decidePrediction(list, currentLevel, userId) {
     if (!Array.isArray(list) || list.length < 2) return null;
     initState(userId);
     const cfgMode = String(autobetCfg[userId]?.mode || 'SIZE').toUpperCase();
     if (cfgMode === 'COMBINED') return { skip: true, reason: 'Combined mode uses its live source predictor' };
-    return calculatePastedModePrediction(list, userStates[userId]) ||
-        { skip: true, reason: 'Calculation unavailable for current 30-second result' };
+
+    const currentResult = getResultNumber(list[0]);
+    if (currentResult === null) {
+        return { skip: true, reason: 'Current result is unavailable' };
+    }
+
+    const oldHistory = await fetchLuciferOldHistoryForAnalysis();
+    const analysisHistory = oldHistory.length >= 2 ? oldHistory : list;
+    const historySignal = analyzeCalculatedResultMode(
+        analysisHistory,
+        list[0]?.issueNumber ?? list[0]?.issue,
+        currentResult
+    );
+
+    return historySignal || {
+        skip: true,
+        reason: `Not enough historical edge after result ${currentResult}`
+    };
 }
 
 function recordLossStreakHit(userId) {
@@ -2339,15 +2573,11 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
     state.history.push(wasWin ? 'W' : 'L');
     if (state.history.length > 20) state.history.shift();
 
-    const previousMode = state.mode || 'NORMAL';
-    // Every result changes the mode, regardless of WIN or LOSS.
-    // NORMAL   -> RECOVERY
-    // RECOVERY -> NORMAL
-    state.mode = previousMode === 'NORMAL' ? 'RECOVERY' : 'NORMAL';
-    state.nextPredictionMode = state.mode === 'RECOVERY' ? 'COLOUR' : 'SIZE';
+    // Do not change prediction mode after WIN or LOSS. The next period's
+    // history selector chooses its own SIZE/COLOUR signal.
     state.pastedMode = false;
     state.lossStreak = wasWin ? 0 : (Number(state.lossStreak) || 0) + 1;
-    console.log(`[MODE CHANGE] ${previousMode} -> ${state.mode} after ${wasWin ? 'WIN' : 'LOSS'} | next=${state.nextPredictionMode}`);
+    console.log(`[RESULT] ${wasWin ? 'WIN' : 'LOSS'} recorded; next mode will be selected from current-period history`);
 
     // A win resets the martingale level for both SIZE and COLOUR, including
     // WATCH settlements where no live stake was placed.
@@ -2464,12 +2694,16 @@ async function handleLoss(userId, chatId, actual, num, betLevel, bets = [], sett
 // ============================================================
 function getActualColorBase(number) {
     const n = Number(number);
-    return n <= 4 ? 'GREEN' : 'RED';
+    if (n === 0) return 'RED';
+    if (n === 5) return 'GREEN';
+    return n % 2 === 0 ? 'RED' : 'GREEN';
 }
 
 function getActualColorLabel(number) {
     const n = Number(number);
-    return n <= 4 ? 'GREEN' : 'RED';
+    if (n === 0) return 'RED+VIOLET';
+    if (n === 5) return 'GREEN+VIOLET';
+    return n % 2 === 0 ? 'RED' : 'GREEN';
 }
 
 function parseItem(item) {
@@ -2477,7 +2711,7 @@ function parseItem(item) {
     return {
         n,
         size: n >= 5 ? "BIG" : "SMALL",
-        color: n <= 4 ? "GREEN" : "RED"
+        color: n === 0 ? "RED" : n === 5 ? "GREEN" : n % 2 === 0 ? "RED" : "GREEN"
     };
 }
 
@@ -2536,13 +2770,53 @@ async function runPredict(userId, chatId) {
     const signal = cfg.mode === "COMBINED"
         ? getCombinedSourcePrediction(list, userId)
         : await decidePrediction(list, next, userId);
-    if(!signal) { scheduleRun(userId, chatId, 5000); runInFlight.delete(runKey); return; }
+    if(!signal) {
+        await send(chatId,
+            "⏭️ SKIP\n" +
+            "Period: " + next.slice(-6) + "\n" +
+            "Reason: Prediction signal unavailable"
+        );
+        scheduleRun(userId, chatId, 5000);
+        runInFlight.delete(runKey);
+        return;
+    }
     if (signal.skip === true) {
-        console.log(`[PREDICTION] Skipping period ${next}: ${signal.reason || "skip result"}`);
+        const reason = signal.reason || "Signal filter rejected this period";
+        console.log(`[PREDICTION] Skipping period ${next}: ${reason}`);
+        await send(chatId,
+            "⏭️ SKIP\n" +
+            "Period: " + next.slice(-6) + "\n" +
+            "Reason: " + reason
+        );
         scheduleRun(userId, chatId, 8000);
         runInFlight.delete(runKey);
         return;
     }
+
+    // Confidence is a filter, not a win guarantee. Do not force a bet when
+    // the predictor does not report a strong enough signal.
+    // Existing source-based signals do not expose a confidence field; keep
+    // them eligible, while still filtering any explicitly low-confidence signal.
+    const signalConfidence = Number(signal.conf ?? 90);
+    const minimumConfidence = 90;
+    if (!Number.isFinite(signalConfidence) || signalConfidence < minimumConfidence) {
+        const reason = `Confidence ${Number.isFinite(signalConfidence) ? signalConfidence : 0}% < required ${minimumConfidence}%`;
+        console.log(`[PREDICTION] Skipping period ${next}: ${reason}`);
+        await send(chatId,
+            "⏭️ SKIP\n" +
+            "Period: " + next.slice(-6) + "\n" +
+            "Reason: " + reason
+        );
+        scheduleRun(userId, chatId, 8000);
+        runInFlight.delete(runKey);
+        return;
+    }
+
+    // Mode is chosen by this period's strongest history signal, not by the
+    // previous period's WIN or LOSS.
+    state.mode = signal.type === 'COLOR' ? 'RECOVERY' : 'NORMAL';
+    state.nextPredictionMode = signal.type === 'COLOR' ? 'COLOUR' : 'SIZE';
+
     let abLine = "🤖 AutoBet: OFF";
     let canBet = false;
 
@@ -2567,6 +2841,8 @@ async function runPredict(userId, chatId) {
 "║ Game    : BIG/SMALL\n"+
 "║ Mode    : "+String(signal.mode || signal.pat || "PATTERN-5/4")+"\n"+
 "║ Pattern : "+String(signal.pattern || "LAST-5/LAST-4")+"\n"+
+"║ Number  : "+String(signal.number ?? "-")+"\n"+
+"║ Conf.   : "+String(signal.conf ?? "-")+"%\n"+
 "║ "+(signal.type === "COLOR" ? "Color   : " : "Size    : ")+signal.val+"\n"+
 "║ Result  : "+formatPrediction(signal)+"\n"+
 "║ Source  : Live Jade site\n"+
@@ -2733,7 +3009,7 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
                 const previousNumber = getResultNumber(previous);
                 const beforePreviousNumber = getResultNumber(beforePrevious);
 
-                const color = n => Number(n) <= 4 ? 'GREEN' : 'RED';
+                const color = n => Number(n) % 2 === 0 ? 'RED' : 'GREEN';
                 const samePair = (a, b) => a !== null && b !== null &&
                     color(a) === color(b) && getCombinedStrategySize(a) === getCombinedStrategySize(b);
 
@@ -3624,4 +3900,4 @@ const shutdown = async (signal) => {
 };
 process.once('SIGTERM', () => shutdown('SIGTERM'));
 process.once('SIGINT', () => shutdown('SIGINT'));
-startBot();
+startBot();d
