@@ -656,9 +656,11 @@ const DRAW_URL    = "https://luciferapi.com/30sec.php";
 // no working 1min.php/1m.php endpoint was found, so it is used only as a
 // secondary historical cross-check, never as the primary 1M result source.
 const LUCIFER_OLD_ANALYSIS_URL = "https://luciferapi.com/30sec.php";
-const COMBINED_PAGE_URL = "https://spiffy-entremet-e5ac9c.netlify.app/";
-// The Netlify page itself fetches this live JSON endpoint for every refresh.
-const COMBINED_SOURCE_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json";
+const COMBINED_PAGE_URL = "https://endearing-bavarois-067272.netlify.app/";
+// BigSmall+Number uses the requested one-minute draw source.
+const COMBINED_SOURCE_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json";
+// Lucifer root returns the complete historical dataset used for shared number ranking.
+const LUCIFER_FULL_HISTORY_URL = "https://luciferapi.com/";
 const SITE_URL    = "https://www.ts777.co";
 const LOGIN_PAGE_URL = "https://www.ts777.co/login";
 const CHROME_ARGS = [
@@ -1032,11 +1034,34 @@ async function fetchCombinedSourceList() {
         return raw.slice(0, 25).map(item => ({
             issueNumber: String(item?.issueNumber ?? ''),
             number: String(item?.number ?? '').replace(/\D/g, '').slice(-1),
-            color: String(item?.color ?? '')
+            color: String(item?.color ?? ''),
+            size: String(item?.size ?? '')
         })).filter(item => /^\d+$/.test(item.issueNumber) && /^[0-9]$/.test(item.number));
     } catch (error) {
         console.error('[COMBINED SOURCE ERROR]', error?.message || error);
         return null;
+    }
+}
+
+async function fetchLuciferFullHistory() {
+    try {
+        const response = await axios.get(LUCIFER_FULL_HISTORY_URL + '?_=' + Date.now(), {
+            headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache, no-store', 'Pragma': 'no-cache', 'User-Agent': 'Mozilla/5.0' },
+            timeout: 12000,
+            maxContentLength: 16 * 1024 * 1024,
+            maxBodyLength: 16 * 1024 * 1024,
+            validateStatus: status => status >= 200 && status < 300
+        });
+        const raw = Array.isArray(response.data?.data) ? response.data.data : [];
+        return raw.map(item => ({
+            issueNumber: String(item?.issueNumber ?? item?.issue ?? ''),
+            number: Number.parseInt(String(item?.number ?? '').replace(/\D/g, '').slice(-1), 10),
+            size: String(item?.size ?? '').toUpperCase(),
+            color: String(item?.color ?? '').split(',')[0].toUpperCase()
+        })).filter(item => /^\d+$/.test(item.issueNumber) && Number.isInteger(item.number) && item.number >= 0 && item.number <= 9);
+    } catch (error) {
+        console.error('[LUCIFER FULL HISTORY ERROR]', error?.message || error);
+        return [];
     }
 }
 
@@ -1045,38 +1070,72 @@ function getCombinedStrategySize(n) {
     return mapping[Number(n)] || null;
 }
 
-function getCombinedSourcePrediction(list, userId) {
+async function getCombinedSourcePrediction(list, userId) {
     const latest = Array.isArray(list) && list[0];
     const n = Number.parseInt(String(latest?.number ?? ''), 10);
     if (!latest || !Number.isInteger(n) || n < 0 || n > 9) {
-        return { skip: true, reason: 'Combined source returned no valid latest result' };
+        return { skip: true, reason: 'One-minute source returned no valid latest result' };
     }
 
-    // Exact mapping observed in the supplied Netlify page:
-    // 9/5/1/0 -> BIG 4; 8/7/6/4/3/2 -> SMALL 5.
+    // Exact SIZE mapping observed in the supplied Netlify page.
     const mapping = ['BIG', 'BIG', 'SMALL', 'SMALL', 'SMALL', 'BIG', 'SMALL', 'SMALL', 'SMALL', 'BIG'];
-    let size = mapping[n];
-    let number = size === 'BIG' ? 4 : 5;
-    const state = userStates[String(userId)] || {};
-    const mode = state.combinedFlipNext === true ? 'FLIP' : 'DIRECT';
-    if (mode === 'FLIP') {
-        size = size === 'BIG' ? 'SMALL' : 'BIG';
-        number = size === 'BIG' ? 4 : 5;
+    const size = mapping[n];
+    const oppositePool = size === 'BIG' ? [0, 1, 2, 3, 4] : [5, 6, 7, 8, 9];
+    const cacheKey = `${String(latest.issueNumber ?? latest.issue)}:${n}:${size}`;
+    if (getCombinedSourcePrediction._cache?.key === cacheKey) {
+        return getCombinedSourcePrediction._cache.signal;
+    }
+    const fullHistory = await fetchLuciferFullHistory();
+    if (fullHistory.length < 2) {
+        return { skip: true, reason: 'Lucifer full history unavailable for shared number selection' };
     }
 
-    return {
+    const currentSize = String(latest?.size || getSizeFromNumber(n)).toUpperCase();
+    const currentColor = String(latest?.color || '').split(',')[0].toUpperCase();
+    const transitionCounts = Object.fromEntries(oppositePool.map(number => [number, 0]));
+    const overallCounts = Object.fromEntries(oppositePool.map(number => [number, 0]));
+    for (const row of fullHistory) {
+        if (oppositePool.includes(row.number)) overallCounts[row.number]++;
+    }
+    for (let index = 1; index < fullHistory.length; index++) {
+        const older = fullHistory[index];
+        const next = fullHistory[index - 1];
+        if (!next || !oppositePool.includes(next.number)) continue;
+        if (older.size === currentSize && older.color === currentColor) transitionCounts[next.number]++;
+    }
+
+    const ranked = oppositePool.map(number => ({
+        number,
+        transition: transitionCounts[number],
+        overall: overallCounts[number],
+        score: transitionCounts[number] * 3 + overallCounts[number]
+    })).sort((a, b) => b.score - a.score || b.transition - a.transition || b.overall - a.overall || a.number - b.number);
+    const selected = ranked[0];
+    const totalTransitionHits = ranked.reduce((sum, item) => sum + item.transition, 0);
+    const totalOverallHits = ranked.reduce((sum, item) => sum + item.overall, 0);
+    const confidence = totalTransitionHits > 0
+        ? Math.round((selected.transition / totalTransitionHits) * 100)
+        : Math.round((selected.overall / Math.max(1, totalOverallHits)) * 100);
+
+    const signal = {
         type: 'COMBINED',
         val: size,
-        number,
-        mode,
-        pat: mode,
-        pattern: `SOURCE-${n}`,
-        decisionReason: `Netlify source mapping for last result ${n}${mode === 'FLIP' ? ' + loss flip' : ''}`,
+        number: selected.number,
+        mode: 'NETLIFY-SIZE+LUCIFER-NUMBER',
+        pat: 'SHARED-HISTORY',
+        pattern: `SOURCE-SIZE-${size}-OPPOSITE-POOL`,
+        numberConfidence: confidence,
+        decisionReason:
+            `Netlify size for ${n}: ${size}; pool ${oppositePool.join(',')} | ` +
+            `Lucifer context ${currentSize || 'SIZE'}+${currentColor || 'COLOR'} | ` +
+            `selected ${selected.number} (${selected.transition} transition / ${selected.overall} overall)`,
         bets: [
             { type: 'SIZE', val: size, kind: 'size' },
-            { type: 'NUMBER', val: number, kind: 'number' }
+            { type: 'NUMBER', val: selected.number, kind: 'number' }
         ]
     };
+    getCombinedSourcePrediction._cache = { key: cacheKey, signal };
+    return signal;
 }
 
 async function fetchLuciferOldHistoryForAnalysis() {
@@ -1314,6 +1373,26 @@ function analyzeCalculatedResultMode(historyList, currentPeriod, currentResult) 
             val: best.value,
             kind: best.type === 'COLOR' ? 'color' : 'size'
         }]
+    };
+}
+
+// Fallback copied from the supplied APK analysis. This is random UI output,
+// not a historical prediction, so it is never eligible for AutoBet.
+function generateRandomBigSmallFallback(period) {
+    const n = Math.floor(Math.random() * 10);
+    const size = n <= 4 ? 'SMALL' : 'BIG';
+    return {
+        type: 'SIZE',
+        val: size,
+        number: n,
+        conf: 0,
+        fallback: true,
+        historyBased: false,
+        pat: 'RANDOM-FALLBACK',
+        mode: 'SIZE',
+        pattern: 'RANDOM-0-9',
+        decisionReason: `APK fallback: random ${n} -> ${size} for period ${period}`,
+        bets: [{ type: 'SIZE', val: size, kind: 'size' }]
     };
 }
 
@@ -1801,7 +1880,7 @@ async function placeBet(userId, chatId, period, prediction, predType, level, amo
                 amount:      1,
                 betContent:  bc,
                 betMultiple: betMult,
-                gameCode:    "WinGo_30S", 
+                gameCode:    cfg.mode === "COMBINED" ? "WinGo_1M" : "WinGo_30S",
                 issueNumber: String(period),
                 language:    "en",
                 random:      Math.floor(Math.random() * 1e12)
@@ -2544,10 +2623,9 @@ async function decidePrediction(list, currentLevel, userId) {
         currentResult
     );
 
-    return historySignal || {
-        skip: true,
-        reason: `Not enough historical edge after result ${currentResult}`
-    };
+    return historySignal || generateRandomBigSmallFallback(
+        list[0]?.issueNumber ?? list[0]?.issue
+    );
 }
 
 function recordLossStreakHit(userId) {
@@ -2768,7 +2846,7 @@ async function runPredict(userId, chatId) {
 
     initState(userId);
     const signal = cfg.mode === "COMBINED"
-        ? getCombinedSourcePrediction(list, userId)
+        ? await getCombinedSourcePrediction(list, userId)
         : await decidePrediction(list, next, userId);
     if(!signal) {
         await send(chatId,
@@ -2799,7 +2877,7 @@ async function runPredict(userId, chatId) {
     // them eligible, while still filtering any explicitly low-confidence signal.
     const signalConfidence = Number(signal.conf ?? 90);
     const minimumConfidence = 90;
-    if (!Number.isFinite(signalConfidence) || signalConfidence < minimumConfidence) {
+    if (!signal.fallback && (!Number.isFinite(signalConfidence) || signalConfidence < minimumConfidence)) {
         const reason = `Confidence ${Number.isFinite(signalConfidence) ? signalConfidence : 0}% < required ${minimumConfidence}%`;
         console.log(`[PREDICTION] Skipping period ${next}: ${reason}`);
         await send(chatId,
@@ -2817,17 +2895,23 @@ async function runPredict(userId, chatId) {
     state.mode = signal.type === 'COLOR' ? 'RECOVERY' : 'NORMAL';
     state.nextPredictionMode = signal.type === 'COLOR' ? 'COLOUR' : 'SIZE';
 
-    let abLine = "🤖 AutoBet: OFF";
+    let abLine = signal.fallback
+        ? "🤖 AutoBet: OFF (RANDOM FALLBACK)"
+        : "🤖 AutoBet: OFF";
     let canBet = false;
 
     if (!cfg || !cfg.enabled) {
-        abLine = "🤖 AutoBet: OFF";
+        abLine = signal.fallback
+            ? "🤖 AutoBet: OFF (RANDOM FALLBACK)"
+            : "🤖 AutoBet: OFF";
         canBet = false;
-    } else {
+    } else if (!signal.fallback) {
         canBet = true;
         const sequence = cfg.mode === "NUMBER" ? cfg.customNumberBets : cfg.customBets;
         const curBet = sequence[st.level - 1] ?? (cfg.baseBet * (MULT[st.level - 1] || 1));
         abLine = (st.level > 1 ? "📈 MART " : "💰 BET ") + "L" + st.level + ": ₹" + curBet;
+    } else {
+        canBet = false;
     }
 
     const patternName = signal && signal.pat ? signal.pat : (state && state.mode ? state.mode : "NORMAL");
@@ -2842,10 +2926,10 @@ async function runPredict(userId, chatId) {
 "║ Mode    : "+String(signal.mode || signal.pat || "PATTERN-5/4")+"\n"+
 "║ Pattern : "+String(signal.pattern || "LAST-5/LAST-4")+"\n"+
 "║ Number  : "+String(signal.number ?? "-")+"\n"+
-"║ Conf.   : "+String(signal.conf ?? "-")+"%\n"+
+"║ Conf.   : "+String(signal.conf ?? signal.numberConfidence ?? "-")+"%\n"+
 "║ "+(signal.type === "COLOR" ? "Color   : " : "Size    : ")+signal.val+"\n"+
 "║ Result  : "+formatPrediction(signal)+"\n"+
-"║ Source  : Live Jade site\n"+
+"║ Source  : Netlify size + Lucifer history\n"+
 "╠══════════════════════════╣\n"+
 "║ "+abLine+"\n"+
 waitLine+"\n"+
@@ -2996,6 +3080,19 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
             ? Number(b.val) === num
             : b.type === "COLOR" ? String(b.val).toUpperCase() === actualColor
             : b.type === "SIZE" && b.val === actualSize);
+        if (cfg.mode === "COMBINED") {
+            const predictedSize = evaluationBets.find(b => b.type === "SIZE")?.val || "-";
+            const predictedNumber = evaluationBets.find(b => b.type === "NUMBER")?.val;
+            const sizeStatus = sizeMatched ? "WIN ✅" : "LOSS ❌";
+            const numberStatus = numberMatched ? "WIN ✅" : "LOSS ❌";
+            await send(chatId,
+                "🎮 COMBINED RESULT\n" +
+                `Period: ${target}\n` +
+                `Size: ${predictedSize} → ${actualSize} (${sizeStatus})\n` +
+                `Number: ${predictedNumber ?? "-"} → ${num} (${numberStatus})\n` +
+                `Overall: ${win ? "WIN ✅" : "LOSS ❌"}`
+            );
+        }
         // Exact flip rules from the new Netlify page. Apply only after LOSS.
         if (cfg.mode === "COMBINED") {
             const sourceState = userStates[String(userId)] || (userStates[String(userId)] = {});
@@ -3900,4 +3997,4 @@ const shutdown = async (signal) => {
 };
 process.once('SIGTERM', () => shutdown('SIGTERM'));
 process.once('SIGINT', () => shutdown('SIGINT'));
-startBot();d
+startBot();
