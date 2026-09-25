@@ -1092,46 +1092,153 @@ async function getCombinedSourcePrediction(list, userId) {
 
     const currentSize = String(latest?.size || getSizeFromNumber(n)).toUpperCase();
     const currentColor = String(latest?.color || '').split(',')[0].toUpperCase();
-    const transitionCounts = Object.fromEntries(oppositePool.map(number => [number, 0]));
-    const overallCounts = Object.fromEntries(oppositePool.map(number => [number, 0]));
-    for (const row of fullHistory) {
-        if (oppositePool.includes(row.number)) overallCounts[row.number]++;
-    }
-    for (let index = 1; index < fullHistory.length; index++) {
-        const older = fullHistory[index];
-        const next = fullHistory[index - 1];
-        if (!next || !oppositePool.includes(next.number)) continue;
-        if (older.size === currentSize && older.color === currentColor) transitionCounts[next.number]++;
-    }
+    const netlifySizeForNumber = number => mapping[Number(number)];
+    const poolForNumber = number => netlifySizeForNumber(number) === 'BIG'
+        ? [0, 1, 2, 3, 4] : [5, 6, 7, 8, 9];
+    const contextMatches = (row, rule, targetSize, targetColor) => {
+        if (rule === 'EXACT-SIZE-COLOR') return row.size === targetSize && row.color === targetColor;
+        if (rule === 'SIZE-ONLY') return row.size === targetSize;
+        if (rule === 'COLOR-ONLY') return row.color === targetColor;
+        return true;
+    };
+    const findNearestPrediction = (index, rule) => {
+        const target = fullHistory[index];
+        const pool = poolForNumber(target.number);
+        // Keep one record between the target and its historical match so the
+        // target itself can never be counted as the match's future outcome.
+        for (let olderIndex = index + 2; olderIndex < fullHistory.length; olderIndex++) {
+            const older = fullHistory[olderIndex];
+            const following = fullHistory[olderIndex - 1];
+            if (!following || !pool.includes(following.number)) continue;
+            if (contextMatches(older, rule, target.size, target.color)) return following.number;
+        }
+        return null;
+    };
 
-    const ranked = oppositePool.map(number => ({
-        number,
-        transition: transitionCounts[number],
-        overall: overallCounts[number],
-        score: transitionCounts[number] * 3 + overallCounts[number]
-    })).sort((a, b) => b.score - a.score || b.transition - a.transition || b.overall - a.overall || a.number - b.number);
-    const selected = ranked[0];
-    const totalTransitionHits = ranked.reduce((sum, item) => sum + item.transition, 0);
-    const totalOverallHits = ranked.reduce((sum, item) => sum + item.overall, 0);
-    const confidence = totalTransitionHits > 0
-        ? Math.round((selected.transition / totalTransitionHits) * 100)
-        : Math.round((selected.overall / Math.max(1, totalOverallHits)) * 100);
+    // Lightweight online ML candidate. It learns a multiclass score for each
+    // number from period/result/size/colour features, then is evaluated in
+    // chronological walk-forward order before being allowed to win selection.
+    const mlFeatures = row => {
+        const digits = String(row.issueNumber || '').replace(/\D/g, '');
+        return [
+            1,
+            (Number.parseInt(digits.slice(-3), 10) || 0) / 999,
+            (Number.parseInt(digits.slice(-1), 10) || 0) / 9,
+            row.number / 9,
+            row.size === 'BIG' ? 1 : -1,
+            row.color === 'RED' ? 1 : -1
+        ];
+    };
+    const dot = (weights, features) => weights.reduce((sum, value, i) => sum + value * features[i], 0);
+    const mlWeights = Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => [n, [0, 0, 0, 0, 0, 0]]));
+    let mlTested = 0;
+    let mlHits = 0;
+    for (let index = fullHistory.length - 1; index >= 2; index--) {
+        const target = fullHistory[index];
+        const actual = fullHistory[index - 1]?.number;
+        const pool = poolForNumber(target.number);
+        if (!pool.includes(actual)) continue;
+        const features = mlFeatures(target);
+        const predicted = pool.slice().sort((a, b) => dot(mlWeights[b], features) - dot(mlWeights[a], features) || a - b)[0];
+        mlTested++;
+        if (predicted === actual) mlHits++;
+        if (predicted !== actual) {
+            for (let i = 0; i < features.length; i++) {
+                mlWeights[actual][i] += features[i];
+                mlWeights[predicted][i] -= features[i];
+            }
+        }
+    }
+    const currentFeatures = mlFeatures({
+        issueNumber: latest.issueNumber ?? latest.issue,
+        number: n,
+        size: currentSize,
+        color: currentColor
+    });
+    const mlNumber = oppositePool.slice().sort((a, b) =>
+        dot(mlWeights[b], currentFeatures) - dot(mlWeights[a], currentFeatures) || a - b
+    )[0];
+
+    // Select the rule that performed best in a walk-forward test. This avoids
+    // choosing a number merely because it appeared most often overall.
+    const rules = ['EXACT-SIZE-COLOR', 'SIZE-ONLY', 'COLOR-ONLY', 'RECENT-POOL'];
+    const reports = rules.map(rule => {
+        let tested = 0;
+        let hits = 0;
+        const limit = Math.min(fullHistory.length - 1, 401);
+        for (let index = 1; index < limit; index++) {
+            const predicted = rule === 'RECENT-POOL'
+                ? findNearestPrediction(index, 'RECENT-POOL')
+                : findNearestPrediction(index, rule);
+            if (predicted === null) continue;
+            tested++;
+            if (predicted === fullHistory[index - 1].number) hits++;
+        }
+        return { rule, tested, hits, rate: tested ? hits / tested : 0 };
+    });
+    reports.push({ rule: 'ML-PERCEPTRON', tested: mlTested, hits: mlHits, rate: mlTested ? mlHits / mlTested : 0, mlNumber });
+    reports.sort((a, b) => b.rate - a.rate || b.tested - a.tested || a.rule.localeCompare(b.rule));
+
+    const selectedRule = reports[0];
+    const selectedRuleName = selectedRule?.rule || 'EXACT-SIZE-COLOR';
+
+    // Keep the existing size logic. Rank three exact-number candidates inside
+    // the selected opposite-size pool using the same history/ML signal.
+    const rankHistoricalCandidates = (rule) => {
+        const counts = new Map(oppositePool.map(value => [value, 0]));
+        for (let index = 0; index < Math.min(fullHistory.length - 1, 401); index++) {
+            const target = fullHistory[index];
+            const pool = poolForNumber(target.number);
+            const localCounts = new Map(pool.map(value => [value, 0]));
+            for (let olderIndex = index + 2; olderIndex < fullHistory.length; olderIndex++) {
+                const older = fullHistory[olderIndex];
+                const following = fullHistory[olderIndex - 1];
+                if (!following || !pool.includes(following.number)) continue;
+                if (contextMatches(older, rule, target.size, target.color)) {
+                    localCounts.set(following.number, (localCounts.get(following.number) || 0) + 1);
+                }
+            }
+            for (const value of oppositePool) {
+                counts.set(value, counts.get(value) + (localCounts.get(value) || 0));
+            }
+        }
+        return oppositePool.slice().sort((a, b) =>
+            (counts.get(b) || 0) - (counts.get(a) || 0) || a - b
+        );
+    };
+
+    const rankedNumbers = selectedRuleName === 'ML-PERCEPTRON'
+        ? oppositePool.slice().sort((a, b) =>
+            dot(mlWeights[b], currentFeatures) - dot(mlWeights[a], currentFeatures) || a - b
+        )
+        : rankHistoricalCandidates(selectedRuleName);
+    const nearestNumber = selectedRuleName === 'ML-PERCEPTRON'
+        ? selectedRule?.mlNumber
+        : findNearestPrediction(0, selectedRuleName);
+    const selectedNumbers = [nearestNumber, ...rankedNumbers, ...oppositePool]
+        .filter(number => Number.isInteger(number) && oppositePool.includes(number))
+        .filter((number, index, values) => values.indexOf(number) === index)
+        .slice(0, 3);
+    const number = selectedNumbers[0] ?? oppositePool[0];
+    const confidence = selectedRule?.tested ? Math.round(selectedRule.rate * 100) : 0;
 
     const signal = {
         type: 'COMBINED',
         val: size,
-        number: selected.number,
+        number,
+        numbers: selectedNumbers,
         mode: 'NETLIFY-SIZE+LUCIFER-NUMBER',
-        pat: 'SHARED-HISTORY',
+        pat: 'SHARED-HISTORY-TOP-3',
         pattern: `SOURCE-SIZE-${size}-OPPOSITE-POOL`,
         numberConfidence: confidence,
         decisionReason:
             `Netlify size for ${n}: ${size}; pool ${oppositePool.join(',')} | ` +
             `Lucifer context ${currentSize || 'SIZE'}+${currentColor || 'COLOR'} | ` +
-            `selected ${selected.number} (${selected.transition} transition / ${selected.overall} overall)`,
+            `rule ${selectedRuleName} walk-forward ${selectedRule?.hits || 0}/${selectedRule?.tested || 0} | ` +
+            `selected top 3: ${selectedNumbers.join(', ')}`,
         bets: [
             { type: 'SIZE', val: size, kind: 'size' },
-            { type: 'NUMBER', val: selected.number, kind: 'number' }
+            ...selectedNumbers.map(value => ({ type: 'NUMBER', val: value, kind: 'number' }))
         ]
     };
     getCombinedSourcePrediction._cache = { key: cacheKey, signal };
@@ -2231,8 +2338,10 @@ function formatPrediction(signal) {
     if (signal.type === "COLOR") return String(signal.val || "").toUpperCase();
     if (signal.type === "COMBINED") {
         const size = String(signal.val || "").toUpperCase();
-        const number = signal.number ?? signal.bets?.find(b => b.type === "NUMBER")?.val;
-        return number === undefined ? size : `${size} OR ${Number(number)}`;
+        const numbers = Array.isArray(signal.numbers) && signal.numbers.length
+            ? signal.numbers
+            : signal.bets?.filter(b => b.type === "NUMBER").map(b => b.val);
+        return numbers?.length ? `${size} OR ${numbers.join(", ")}` : size;
     }
     return "SKIP";
 }
@@ -2925,7 +3034,7 @@ async function runPredict(userId, chatId) {
 "║ Game    : BIG/SMALL\n"+
 "║ Mode    : "+String(signal.mode || signal.pat || "PATTERN-5/4")+"\n"+
 "║ Pattern : "+String(signal.pattern || "LAST-5/LAST-4")+"\n"+
-"║ Number  : "+String(signal.number ?? "-")+"\n"+
+"║ Number  : "+String(Array.isArray(signal.numbers) ? signal.numbers.join(', ') : (signal.number ?? "-"))+"\n"+
 "║ Conf.   : "+String(signal.conf ?? signal.numberConfidence ?? "-")+"%\n"+
 "║ "+(signal.type === "COLOR" ? "Color   : " : "Size    : ")+signal.val+"\n"+
 "║ Result  : "+formatPrediction(signal)+"\n"+
@@ -2943,9 +3052,10 @@ waitLine+"\n"+
         // Enforce exactly one SIZE and one NUMBER for each period in COMBINED mode.
         const sizeSpec = rawSpecs.find(spec => spec.type === "SIZE");
         const colorSpec = rawSpecs.find(spec => spec.type === "COLOR");
-        const numberSpec = rawSpecs.find(spec => spec.type === "NUMBER");
+        const numberSpecs = rawSpecs.filter(spec => spec.type === "NUMBER");
+        const numberSpec = numberSpecs[0];
         const specs = cfg.mode === "COMBINED"
-            ? [sizeSpec, numberSpec].filter(Boolean)
+            ? [sizeSpec, ...numberSpecs].filter(Boolean)
             : cfg.mode === "NUMBER"
                 ? [numberSpec].filter(Boolean)
                 : [colorSpec || sizeSpec].filter(Boolean);
@@ -3082,14 +3192,16 @@ async function checkResult(userId, chatId, target, predicted, predType, placedBe
             : b.type === "SIZE" && b.val === actualSize);
         if (cfg.mode === "COMBINED") {
             const predictedSize = evaluationBets.find(b => b.type === "SIZE")?.val || "-";
-            const predictedNumber = evaluationBets.find(b => b.type === "NUMBER")?.val;
+            const predictedNumbers = evaluationBets
+                .filter(b => b.type === "NUMBER")
+                .map(b => b.val);
             const sizeStatus = sizeMatched ? "WIN ✅" : "LOSS ❌";
             const numberStatus = numberMatched ? "WIN ✅" : "LOSS ❌";
             await send(chatId,
                 "🎮 COMBINED RESULT\n" +
                 `Period: ${target}\n` +
                 `Size: ${predictedSize} → ${actualSize} (${sizeStatus})\n` +
-                `Number: ${predictedNumber ?? "-"} → ${num} (${numberStatus})\n` +
+                `Numbers: ${predictedNumbers.length ? predictedNumbers.join(', ') : "-"} → ${num} (${numberStatus})\n` +
                 `Overall: ${win ? "WIN ✅" : "LOSS ❌"}`
             );
         }
