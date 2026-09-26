@@ -2333,7 +2333,12 @@ function updateCombinedAfterResult(userId, sizeWon, numberWon, betPlaced) {
 
 function formatPrediction(signal) {
     if (!signal || signal.skip === true) return "SKIP";
-    if (signal.type === "NUMBER") return String(Number(signal.val));
+    if (signal.type === "NUMBER") {
+        const numbers = Array.isArray(signal.numbers) && signal.numbers.length
+            ? signal.numbers
+            : signal.bets?.filter(b => b.type === "NUMBER").map(b => b.val);
+        return numbers?.length ? numbers.join(", ") : String(Number(signal.val));
+    }
     if (signal.type === "SIZE") return String(signal.val || "").toUpperCase();
     if (signal.type === "COLOR") return String(signal.val || "").toUpperCase();
     if (signal.type === "COMBINED") {
@@ -2717,6 +2722,35 @@ async function decidePrediction(list, currentLevel, userId) {
     if (!Array.isArray(list) || list.length < 2) return null;
     initState(userId);
     const cfgMode = String(autobetCfg[userId]?.mode || 'SIZE').toUpperCase();
+
+    // NUMBER mode intentionally reuses the exact same top-three number
+    // analysis as COMBINED mode. The size leg is removed; only the three
+    // ranked exact-number bets are returned.
+    if (cfgMode === 'NUMBER') {
+        const combinedSignal = await getCombinedSourcePrediction(list, userId);
+        if (!combinedSignal || combinedSignal.skip === true) return combinedSignal;
+        const numbers = Array.isArray(combinedSignal.numbers)
+            ? combinedSignal.numbers.slice(0, 3)
+            : combinedSignal.bets
+                ?.filter(bet => bet.type === 'NUMBER')
+                .map(bet => Number(bet.val))
+                .slice(0, 3);
+        if (!numbers?.length) {
+            return { skip: true, reason: 'Top-three number analysis returned no candidates' };
+        }
+        return {
+            ...combinedSignal,
+            type: 'NUMBER',
+            val: numbers[0],
+            number: numbers[0],
+            numbers,
+            mode: 'NETLIFY-SIZE+LUCIFER-TOP-3-NUMBER',
+            pat: 'SHARED-HISTORY-TOP-3',
+            bets: numbers.map(number => ({ type: 'NUMBER', val: number, kind: 'number' })),
+            decisionReason: `${combinedSignal.decisionReason} | NUMBER mode uses top 3 only`
+        };
+    }
+
     if (cfgMode === 'COMBINED') return { skip: true, reason: 'Combined mode uses its live source predictor' };
 
     const currentResult = getResultNumber(list[0]);
